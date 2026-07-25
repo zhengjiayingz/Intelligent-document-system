@@ -12,6 +12,8 @@ import { PrismaModule } from '@/prisma/prisma.module';
 import { StorageModule } from '@/storage/storage.module';
 import { SummaryMapReduceService } from '@/files/ai/summary/service/summary-map-reduce.service';
 import { KnowledgeExtractService } from '@/files/ai/knowledge/service/knowledge-extract.service';
+import { MediaSemanticChaptersService } from '@/files/ai/summary/service/media-semantic-chapters.service';
+import { DocumentIndexQueueService } from '@/files/ai/index/service/document-index-queue.service';
 
 /** 独立 Worker 进程（docker worker / pnpm start:worker） */
 @Module({
@@ -38,6 +40,8 @@ import { KnowledgeExtractService } from '@/files/ai/knowledge/service/knowledge-
     FilesPreviewService,
     PreviewProcessor,
     SummaryMapReduceService,
+    MediaSemanticChaptersService,
+    DocumentIndexQueueService,
     DocumentIndexProcessor,
     KnowledgeExtractService,
   ],

@@ -4,6 +4,12 @@ jest.mock('@/files/ai/summary/service/summary-map-reduce.service', () => ({
   },
 }));
 
+jest.mock('@/files/ai/summary/service/media-semantic-chapters.service', () => ({
+  MediaSemanticChaptersService: class MockMediaSemanticChaptersService {
+    enrichBookSummaryWithMediaChapters = jest.fn().mockResolvedValue(true);
+  },
+}));
+
 jest.mock('@/files/ai/knowledge/service/knowledge-extract.service', () => ({
   KnowledgeExtractService: class MockKnowledgeExtractService {
     extractKnowledge = jest.fn().mockResolvedValue(undefined);
@@ -102,11 +108,21 @@ function createProcessor() {
     extractKnowledge: jest.fn().mockResolvedValue(undefined),
   };
 
+  const mediaSemanticChapters = {
+    enrichBookSummaryWithMediaChapters: jest.fn().mockResolvedValue(true),
+  };
+
+  const indexQueue = {
+    removeDocumentIndexJob: jest.fn().mockResolvedValue(undefined),
+  };
+
   const processor = new DocumentIndexProcessor(
     prisma as never,
     storageService as never,
     summaryMapReduce as never,
     knowledgeExtract as never,
+    mediaSemanticChapters as never,
+    indexQueue as never,
   );
 
   return {
@@ -121,6 +137,7 @@ function createProcessor() {
     },
     summaryMapReduce,
     knowledgeExtract,
+    mediaSemanticChapters,
   };
 }
 

@@ -80,6 +80,7 @@ describe('asr.provider', () => {
     const out = await transcribeFile(tmpFile);
     expect(out.text).toBe('你好世界');
     expect(out.segments).toHaveLength(2);
+    expect(out.durationMs).toBe(0);
     expect(out.segments[0]).toEqual({
       text: '你好',
       startMs: 0,

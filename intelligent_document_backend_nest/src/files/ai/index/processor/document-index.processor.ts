@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import type { DocumentIndexStatus } from '@prisma/client';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import { PrismaService } from '@/prisma/prisma.service';
 import { StorageService } from '@/storage/storage.service';
 import { chunkText } from '@/files/ai/index/service/text-chunker';
@@ -11,6 +11,7 @@ import {
   isIndexableVideo,
 } from '@/files/ai/index/service/text-extractor';
 import { extractAudioTranscriptFromStorage } from '@/files/ai/index/service/audio-transcript.extractor';
+import { buildMediaIndexChunks } from '@/files/ai/index/utils/media-transcript-chunks.util';
 
 import {
   DOCUMENT_INDEX_JOB_NAME, // 任务名
@@ -20,6 +21,8 @@ import {
 import { embedMany } from '@/files/ai/index/provider/embedding.provider';
 import { SummaryMapReduceService } from '@/files/ai/summary/service/summary-map-reduce.service';
 import { KnowledgeExtractService } from '@/files/ai/knowledge/service/knowledge-extract.service';
+import { MediaSemanticChaptersService } from '@/files/ai/summary/service/media-semantic-chapters.service';
+import { DocumentIndexQueueService } from '@/files/ai/index/service/document-index-queue.service';
 import { isSummaryGenre } from '@/files/ai/summary/types/summary-genre.types';
 
 //  BullMQ 异步 Worker，负责消费 document-index 队列里的索引任务。用户在前端对某个文件点「建立索引」后，API 只负责入队；真正耗时的活都在这里做
@@ -34,6 +37,8 @@ export class DocumentIndexProcessor extends WorkerHost {
     private readonly storageService: StorageService, // 注入 Storage
     private readonly summaryMapReduce: SummaryMapReduceService,
     private readonly knowledgeExtract: KnowledgeExtractService,
+    private readonly mediaSemanticChapters: MediaSemanticChaptersService,
+    private readonly indexQueue: DocumentIndexQueueService,
   ) {
     super();
   }
@@ -95,6 +100,8 @@ export class DocumentIndexProcessor extends WorkerHost {
       };
 
       let chunks: IndexChunk[];
+      let mediaDurationMs = 0;
+      let mediaTranscriptText = '';
       // 音视频：走 ASR 转写（视频先抽音轨）
       if (isIndexableMedia(fileRef)) {
         const isVideo = isIndexableVideo(fileRef);
@@ -110,13 +117,17 @@ export class DocumentIndexProcessor extends WorkerHost {
           this.storageService.getStorageProvider(),
           fileRef,
         );
-        // 每句转写对应一条 chunk（带时间轴，供点击跳播）,剔除掉全文text，只保留segments
-        chunks = transcript.segments.map((seg, i) => ({
-          index: i,
-          content: seg.text,
-          startMs: seg.startMs,
-          endMs: seg.endMs,
-        }));
+        mediaDurationMs = transcript.durationMs ?? 0;
+        mediaTranscriptText = transcript.text?.trim() || '';
+        // SenseVoice 常只有 1 条超长 segment：需再切开再 embedding，否则易 400
+        chunks = buildMediaIndexChunks({
+          segments: transcript.segments,
+          fullText: mediaTranscriptText,
+          durationMs: mediaDurationMs,
+        });
+        if (!mediaTranscriptText) {
+          mediaTranscriptText = chunks.map((c) => c.content).join('');
+        }
       } else {
         // 更新状态 → extracting，进度 10%，清空旧错误
         await this.patchJob(userFileId, {
@@ -244,6 +255,18 @@ export class DocumentIndexProcessor extends WorkerHost {
         summaryGenre,
         chunkInputs,
       );
+      // 4b. 媒体：语义章节摘要（失败不阻断 ready）
+      if (isIndexableMedia(fileRef) && mediaTranscriptText) {
+        await this.patchJob(userFileId, {
+          progress: 97,
+          progressMsg: '正在生成语义章节摘要',
+        });
+        await this.mediaSemanticChapters.enrichBookSummaryWithMediaChapters(
+          userFileId,
+          mediaTranscriptText,
+          mediaDurationMs,
+        );
+      }
       // 5. 学术体裁（用户选了学术论文）：抽取知识卡片（F-06）
       if (summaryGenre === 'paper') {
         await this.patchJob(userFileId, {
@@ -283,7 +306,16 @@ export class DocumentIndexProcessor extends WorkerHost {
         );
       });
 
-      throw error;
+      // 失败即终态：不自动重试；尽量出队，避免同 jobId 残留挡住重建
+      await this.indexQueue.removeDocumentIndexJob(userFileId).catch((err) => {
+        this.logger.warn(
+          `[document-index] 失败后出队失败 userFileId=${userFileId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+
+      throw new UnrecoverableError(message);
     }
   }
 }

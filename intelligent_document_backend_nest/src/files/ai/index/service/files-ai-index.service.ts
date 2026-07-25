@@ -119,8 +119,18 @@ export class FilesAiIndexService {
     const existing = await this.prisma.documentIndexJob.findUnique({
       where: { userFileId: fileId },
     });
-    // ACTIVE_STATUSES 包括：pending、extracting、chunking、embedding 等
-    if (existing && ACTIVE_STATUSES.includes(existing.status)) {
+
+    // failed / force 重建：先清掉队列残留（delayed/failed/waiting 等）
+    if (existing?.status === 'failed' || force) {
+      await this.indexQueue.removeDocumentIndexJob(fileId);
+    }
+
+    // 非 force 时拒绝并发；force（失败重试 / 强制重建）允许顶替
+    if (
+      existing &&
+      ACTIVE_STATUSES.includes(existing.status) &&
+      !force
+    ) {
       throw new ConflictException('索引任务进行中，请稍后再试');
     }
     if (

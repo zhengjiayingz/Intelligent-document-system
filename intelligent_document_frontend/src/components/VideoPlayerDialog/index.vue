@@ -119,9 +119,32 @@
           <el-tab-pane label="摘要" name="summary">
             <div v-if="summaryLoading" class="transcript-empty">正在加载摘要…</div>
             <div v-else-if="summaryError" class="transcript-error">{{ summaryError }}</div>
-            <div v-else-if="summaryOneLiner || summaryOverview" class="summary-body">
+            <div
+              v-else-if="summaryOneLiner || summaryOverview || mediaChapters.length"
+              class="summary-body"
+            >
               <p v-if="summaryOneLiner" class="summary-oneliner">{{ summaryOneLiner }}</p>
               <p v-if="summaryOverview" class="summary-overview">{{ summaryOverview }}</p>
+              <ul v-if="mediaChapters.length" class="chapter-list">
+                <li
+                  v-for="ch in mediaChapters"
+                  :key="ch.index"
+                  class="chapter-item"
+                  :class="{ disabled: ch.startMs == null }"
+                  @click="seekToChapter(ch)"
+                >
+                  <div class="chapter-head">
+                    <span class="chapter-title">{{ ch.index }}. {{ ch.title }}</span>
+                    <span v-if="ch.startMs != null" class="chapter-time">
+                      {{ formatMs(ch.startMs)
+                      }}<template v-if="ch.endMs != null">
+                        – {{ formatMs(ch.endMs) }}</template
+                      >
+                    </span>
+                  </div>
+                  <p class="chapter-summary">{{ ch.summary }}</p>
+                </li>
+              </ul>
             </div>
             <p v-else-if="!indexReady" class="transcript-empty">
               请先建立索引；完成后将自动生成摘要
@@ -237,6 +260,15 @@ const summaryLoading = ref(false)
 const summaryError = ref('')
 const summaryOneLiner = ref('')
 const summaryOverview = ref('')
+
+type MediaChapterItem = {
+  index: number
+  title: string
+  summary: string
+  startMs: number | null
+  endMs: number | null
+}
+const mediaChapters = ref<MediaChapterItem[]>([])
 const vttObjectUrl = ref('')
 let indexPollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -351,6 +383,7 @@ async function loadSummary() {
   if (props.fileId == null || !indexReady.value) {
     summaryOneLiner.value = ''
     summaryOverview.value = ''
+    mediaChapters.value = []
     summaryError.value = ''
     return
   }
@@ -363,15 +396,49 @@ async function loadSummary() {
       typeof payload.oneLiner === 'string' ? payload.oneLiner : ''
     summaryOverview.value =
       typeof payload.overview === 'string' ? payload.overview : ''
+    mediaChapters.value = parseMediaChapters(payload.mediaChapters)
   } catch (e: unknown) {
     summaryOneLiner.value = ''
     summaryOverview.value = ''
+    mediaChapters.value = []
     summaryError.value =
       (e as { response?: { data?: { message?: string } } })?.response?.data
         ?.message || '摘要尚未就绪'
   } finally {
     summaryLoading.value = false
   }
+}
+
+function parseMediaChapters(raw: unknown): MediaChapterItem[] {
+  if (!Array.isArray(raw)) return []
+  const out: MediaChapterItem[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const row = raw[i]
+    if (!row || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    const title = typeof r.title === 'string' ? r.title.trim() : ''
+    const summary = typeof r.summary === 'string' ? r.summary.trim() : ''
+    if (!title && !summary) continue
+    const startMs =
+      typeof r.startMs === 'number' && Number.isFinite(r.startMs)
+        ? Math.max(0, Math.round(r.startMs))
+        : null
+    const endMs =
+      typeof r.endMs === 'number' && Number.isFinite(r.endMs)
+        ? Math.max(0, Math.round(r.endMs))
+        : null
+    out.push({
+      index:
+        typeof r.index === 'number' && Number.isFinite(r.index)
+          ? r.index
+          : i + 1,
+      title: title || `段落 ${i + 1}`,
+      summary: summary || '（暂无摘要）',
+      startMs,
+      endMs,
+    })
+  }
+  return out
 }
 
 async function refreshIndexStatus() {
@@ -434,6 +501,13 @@ function seekToSegment(seg: TranscriptSegment) {
   const el = mediaRef.value
   if (!el || seg.startMs == null) return
   el.currentTime = seg.startMs / 1000
+  void el.play().catch(() => {})
+}
+
+function seekToChapter(ch: MediaChapterItem) {
+  const el = mediaRef.value
+  if (!el || ch.startMs == null) return
+  el.currentTime = ch.startMs / 1000
   void el.play().catch(() => {})
 }
 
@@ -575,6 +649,7 @@ watch(
         transcriptError.value = ''
         summaryOneLiner.value = ''
         summaryOverview.value = ''
+        mediaChapters.value = []
         summaryError.value = ''
         revokeVttUrl()
       }
@@ -757,6 +832,60 @@ const emitDownload = () => {
 
 .summary-overview {
   margin: 0;
+  white-space: pre-wrap;
+}
+
+.chapter-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.chapter-item {
+  padding: 10px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  background: #1f1f1f;
+  border: 1px solid #333;
+}
+
+.chapter-item:hover:not(.disabled) {
+  background: #2a2a2a;
+  border-color: #555;
+}
+
+.chapter-item.disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.chapter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.chapter-title {
+  font-weight: 600;
+  color: #fff;
+  font-size: 13px;
+}
+
+.chapter-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #8ab4f8;
+  font-variant-numeric: tabular-nums;
+}
+
+.chapter-summary {
+  margin: 0;
+  font-size: 12px;
+  color: #bbb;
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 

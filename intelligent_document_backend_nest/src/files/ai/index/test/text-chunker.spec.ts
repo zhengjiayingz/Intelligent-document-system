@@ -62,4 +62,20 @@ describe('text-chunker', () => {
       'overlap 必须满足 0 <= overlap < chunkSize',
     );
   });
+
+  it('含 emoji 时不应在码点中间切开（避免 Prisma hex escape 错误）', () => {
+    // 😀 = 1 code point, 2 UTF-16 code units
+    const emoji = '😀';
+    const text = emoji.repeat(10);
+    const chunks = chunkText(text, { chunkSize: 3, overlap: 1 });
+    for (const c of chunks) {
+      // 每块应为完整码点拼接，不应含孤立代理
+      expect(() => JSON.stringify(c.content)).not.toThrow();
+      for (const ch of c.content) {
+        const cp = ch.codePointAt(0)!;
+        expect(cp < 0xd800 || cp > 0xdfff).toBe(true);
+      }
+    }
+    expect(chunks[0]?.content).toBe(emoji.repeat(3));
+  });
 });

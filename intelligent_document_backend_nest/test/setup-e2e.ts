@@ -58,8 +58,9 @@ jest.mock('@/files/ai/math/provider/math-vision.provider', () => ({
     model: 'mock-vl',
   })),
   streamMathVisionChat: jest.fn(
-    async (input: { onChunk: (text: string) => void }) => {
+    (input: { onChunk: (text: string) => void }) => {
       input.onChunk(MOCK_AI_STREAM_TEXT);
+      return Promise.resolve();
     },
   ),
 }));

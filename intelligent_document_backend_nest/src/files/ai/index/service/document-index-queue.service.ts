@@ -27,8 +27,8 @@ export class DocumentIndexQueueService implements OnModuleDestroy {
       this.queue = new Queue<DocumentIndexJobData>(DOCUMENT_INDEX_QUEUE_NAME, {
         connection: this.getConnection(),
         defaultJobOptions: {
-          attempts: 2,
-          backoff: { type: 'exponential', delay: 5000 },
+          // 失败即终态：避免「DB 已 failed 但队列仍 delayed/retry」导致无法重新入队
+          attempts: 1,
           removeOnComplete: { count: 200 },
           removeOnFail: { count: 100 },
         },
@@ -37,21 +37,42 @@ export class DocumentIndexQueueService implements OnModuleDestroy {
     return this.queue;
   }
 
+  private jobIdFor(userFileId: number) {
+    return `document-index-${userFileId}`;
+  }
+
+  /**
+   * 从队列移除该文件的索引任务（failed / delayed / waiting / completed）。
+   * active 时尽量移除；失败忽略。
+   */
+  async removeDocumentIndexJob(userFileId: number): Promise<void> {
+    const queue = this.getQueue();
+    const existing = await queue.getJob(this.jobIdFor(userFileId));
+    if (!existing) return;
+    try {
+      await existing.remove();
+    } catch {
+      // active 等状态可能暂时无法 remove
+    }
+  }
+
   async enqueueDocumentIndex(data: DocumentIndexJobData) {
-    const jobId = `document-index-${data.userFileId}`;
+    const jobId = this.jobIdFor(data.userFileId);
     const queue = this.getQueue();
     const existing = await queue.getJob(jobId);
 
     if (existing) {
       const state = await existing.getState();
-      if (state === 'completed' || state === 'failed') {
-        await existing.remove();
-      } else if (
-        state === 'waiting' ||
-        state === 'active' ||
+      if (
+        state === 'completed' ||
+        state === 'failed' ||
         state === 'delayed' ||
+        state === 'waiting' ||
         state === 'prioritized'
       ) {
+        await existing.remove().catch(() => undefined);
+      } else if (state === 'active') {
+        // 真正执行中：不顶替
         return existing;
       }
     }

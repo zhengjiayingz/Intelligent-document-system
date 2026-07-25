@@ -8,11 +8,11 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
-/** 视频最长秒数；未配置时默认 30 分钟 */
+/** 视频最长秒数；未配置时默认 60 分钟 */
 export function getMaxVideoDurationSec(): number {
   const raw = process.env.AI_MAX_VIDEO_DURATION_SEC?.trim();
-  const n = raw ? Number(raw) : 1800;
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1800;
+  const n = raw ? Number(raw) : 3600;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 3600;
 }
 
 /**

@@ -136,5 +136,6 @@ export async function transcribeFile(absPath: string): Promise<AsrTranscript> {
     // !直接取全文text或者所有segments的text拼接成全文
     text: text || segments.map((s) => s.text).join(''),
     segments, //! 带上 包含startMs/endMs 的规范化 segments数组
+    durationMs: 0,
   };
 }

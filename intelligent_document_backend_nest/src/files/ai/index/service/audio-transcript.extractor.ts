@@ -65,17 +65,25 @@ export async function extractAudioTranscriptFromStorage(
 
   try {
     await writeFile(sourcePath, buffer);
-    if (isVideo) {
+    let durationMs = 0;
+    try {
       const durationSec = await probeMediaDurationSec(sourcePath);
-      const maxSec = getMaxVideoDurationSec();
-      if (durationSec > maxSec) {
-        throw new Error(
-          `视频时长约 ${Math.ceil(durationSec / 60)} 分钟，超过上限 ${Math.floor(maxSec / 60)} 分钟`,
-        );
+      durationMs = Math.round(durationSec * 1000);
+      if (isVideo) {
+        const maxSec = getMaxVideoDurationSec();
+        if (durationSec > maxSec) {
+          throw new Error(
+            `视频时长约 ${Math.ceil(durationSec / 60)} 分钟，超过上限 ${Math.floor(maxSec / 60)} 分钟`,
+          );
+        }
       }
+    } catch (err) {
+      if (isVideo) throw err;
+      // 音频时长探测失败不阻断转写
     }
     prepared = await prepareAudioForAsr(sourcePath);
-    return await transcribeFile(prepared.wavPath);
+    const transcript = await transcribeFile(prepared.wavPath);
+    return { ...transcript, durationMs };
   } finally {
     await cleanupPreparedAudio(prepared);
     await rm(downloadDir, { recursive: true, force: true });

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>ECharts 提取</title>
+  <style>
+    body {
+      width: 360px;
+      margin: 0;
+      padding: 12px;
+      font: 13px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #0f1419;
+      color: #e7ecf3;
+    }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    p { margin: 0 0 10px; color: #8b9bb4; font-size: 12px; }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      background: #3d8bfd;
+      color: #fff;
+    }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    #status { margin: 10px 0 6px; font-size: 12px; color: #8b9bb4; }
+    #out {
+      margin: 0;
+      max-height: 360px;
+      overflow: auto;
+      padding: 10px;
+      border-radius: 8px;
+      background: #0c1017;
+      border: 1px solid #2a3548;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <h1>ECharts Tooltip 提取</h1>
+  <p>在页面 MAIN world 注入脚本：showTip 模拟悬停，只读 tooltip DOM，不调用 getOption。</p>
+  <button type="button" id="btn">提取当前页图表</button>
+  <div id="status">就绪</div>
+  <pre id="out">点击上方按钮开始…</pre>
+  <script src="popup.js"></script>
+</body>
+</html>

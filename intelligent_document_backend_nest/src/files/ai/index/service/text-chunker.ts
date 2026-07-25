@@ -23,6 +23,14 @@ function resolveMaxChunks(maxChunks?: number): number {
   return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 500;
 }
 
+/**
+ * 按 Unicode 码点切开（Array.from），避免 String.slice 劈开代理对，
+ * 导致 Prisma createMany 报 unexpected end of hex escape。
+ */
+function toCodePoints(text: string): string[] {
+  return Array.from(text);
+}
+
 /** 固定窗口 + overlap 滑动分块，超出 AI_MAX_INDEX_CHUNKS 时截断 */
 export function chunkText(
   fullText: string,
@@ -42,23 +50,24 @@ export function chunkText(
     throw new Error('overlap 必须满足 0 <= overlap < chunkSize');
   }
 
+  const units = toCodePoints(fullText);
   const stride = chunkSize - overlap;
   const chunks: TextChunk[] = [];
   let start = 0;
 
-  while (start < fullText.length && chunks.length < maxChunks) {
+  while (start < units.length && chunks.length < maxChunks) {
     chunks.push({
       index: chunks.length,
-      content: fullText.slice(start, start + chunkSize),
+      content: units.slice(start, start + chunkSize).join(''),
     });
 
-    if (start + chunkSize >= fullText.length) {
+    if (start + chunkSize >= units.length) {
       break;
     }
     start += stride;
   }
 
-  if (start + chunkSize < fullText.length && chunks.length >= maxChunks) {
+  if (start + chunkSize < units.length && chunks.length >= maxChunks) {
     console.warn(
       `[text-chunker] 文档过长，已截断为 ${maxChunks} 块（chunkSize=${chunkSize}, overlap=${overlap}）`,
     );
@@ -81,7 +90,8 @@ export function joinOverlappingChunkContents(
   let text = contents[0] ?? '';
   for (let i = 1; i < contents.length; i++) {
     const part = contents[i] ?? '';
-    text += part.slice(Math.min(overlap, part.length));
+    const units = toCodePoints(part);
+    text += units.slice(Math.min(overlap, units.length)).join('');
   }
   return text;
 }

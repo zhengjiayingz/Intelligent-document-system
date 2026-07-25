@@ -13,5 +13,8 @@ export function getChatModel() {
     apiKey: requireAiApiKey(),
     baseURL: process.env.AI_BASE_URL?.trim() || 'https://api.deepseek.com',
   });
-  return client.chat(process.env.AI_MODEL?.trim() || 'deepseek-chat');
+  // 2026-07-24 起 deepseek-chat / deepseek-reasoner 已下线，须用 v4 显式模型名
+  return client.chat(
+    process.env.AI_MODEL?.trim() || 'deepseek-v4-flash',
+  );
 }

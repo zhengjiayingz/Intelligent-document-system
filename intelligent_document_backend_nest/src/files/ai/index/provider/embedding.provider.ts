@@ -65,8 +65,15 @@ async function requestEmbeddings(input: string[]): Promise<number[][]> {
   const json = await parseEmbeddingsResponse(res);
 
   if (!res.ok) {
+    const detail =
+      json.error?.message ||
+      (typeof (json as { message?: unknown }).message === 'string'
+        ? (json as { message: string }).message
+        : '');
     throw new Error(
-      json.error?.message || `Embedding API failed: ${res.status}`,
+      detail
+        ? `Embedding API failed: ${res.status} — ${detail}`
+        : `Embedding API failed: ${res.status}`,
     );
   }
 

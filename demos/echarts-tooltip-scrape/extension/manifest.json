@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ECharts Tooltip 提取 Demo",
+  "version": "0.1.0",
+  "description": "在第三方页通过 showTip + 读 tooltip DOM 提取柱状图数值（不调用 getOption 读源数据）。",
+  "action": {
+    "default_title": "提取 ECharts 数据",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "file:///*"
+  ]
+}
