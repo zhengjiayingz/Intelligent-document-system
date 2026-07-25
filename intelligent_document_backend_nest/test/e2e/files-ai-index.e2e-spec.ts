@@ -4,6 +4,10 @@ jest.mock('@/files/ai/index/service/document-index-queue.service', () => ({
       return Promise.resolve({ id: 'mock-document-index-job' });
     }
 
+    removeDocumentIndexJob() {
+      return Promise.resolve();
+    }
+
     async onModuleDestroy() {
       /* noop */
     }
