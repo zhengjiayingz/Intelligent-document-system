@@ -690,7 +690,11 @@ async function triggerIndex() {
   knowledgeData.value = null
   knowledgeError.value = ''
   const force =
-    indexStatus.value?.status === 'ready' || indexStatus.value?.status === 'failed'
+    indexStatus.value?.status === 'ready' ||
+    indexStatus.value?.status === 'failed' ||
+    // Worker 强杀后可能卡在 ACTIVE：允许 force 顶替并走断点续建
+    (indexStatus.value?.status != null &&
+      INDEX_ACTIVE_STATUSES.includes(indexStatus.value.status))
   try {
     const data = await triggerDocumentIndex(props.fileId, summaryGenre.value, { force })
     indexStatus.value = data

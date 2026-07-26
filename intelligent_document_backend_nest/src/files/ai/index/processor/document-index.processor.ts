@@ -12,6 +12,11 @@ import {
 } from '@/files/ai/index/service/text-extractor';
 import { extractAudioTranscriptFromStorage } from '@/files/ai/index/service/audio-transcript.extractor';
 import { buildMediaIndexChunks } from '@/files/ai/index/utils/media-transcript-chunks.util';
+import {
+  assessIndexResume,
+  hasChunkEmbedding,
+  type IndexResumeFrom,
+} from '@/files/ai/index/utils/index-resume.util';
 
 import {
   DOCUMENT_INDEX_JOB_NAME, // 任务名
@@ -24,6 +29,13 @@ import { KnowledgeExtractService } from '@/files/ai/knowledge/service/knowledge-
 import { MediaSemanticChaptersService } from '@/files/ai/summary/service/media-semantic-chapters.service';
 import { DocumentIndexQueueService } from '@/files/ai/index/service/document-index-queue.service';
 import { isSummaryGenre } from '@/files/ai/summary/types/summary-genre.types';
+
+type IndexChunk = {
+  index: number;
+  content: string;
+  startMs?: number | null;
+  endMs?: number | null;
+};
 
 //  BullMQ 异步 Worker，负责消费 document-index 队列里的索引任务。用户在前端对某个文件点「建立索引」后，API 只负责入队；真正耗时的活都在这里做
 // @Processor 装饰器，第一个参数表示监听DOCUMENT_INDEX_QUEUE_NAME这个队列，约定了队列只要有任务就调用process方法处理
@@ -60,6 +72,98 @@ export class DocumentIndexProcessor extends WorkerHost {
       data,
     });
   }
+
+  private async loadPersistedChunks(userFileId: number): Promise<{
+    resumeFrom: IndexResumeFrom | null;
+    chunks: IndexChunk[];
+  }> {
+    const jobMeta = await this.prisma.documentIndexJob.findUnique({
+      where: { userFileId },
+      select: { chunkCount: true },
+    });
+    const rows = await this.prisma.documentChunk.findMany({
+      where: { userFileId },
+      orderBy: { chunkIndex: 'asc' },
+      select: {
+        chunkIndex: true,
+        content: true,
+        embedding: true,
+        startMs: true,
+        endMs: true,
+      },
+    });
+    const resumeFrom = assessIndexResume(rows, jobMeta?.chunkCount ?? null);
+    if (resumeFrom == null) {
+      return { resumeFrom: null, chunks: [] };
+    }
+    return {
+      resumeFrom,
+      chunks: rows.map((r) => ({
+        index: r.chunkIndex,
+        content: r.content,
+        startMs: r.startMs,
+        endMs: r.endMs,
+      })),
+    };
+  }
+
+  private async persistNewChunks(
+    userFileId: number,
+    chunks: IndexChunk[],
+  ): Promise<void> {
+    await this.prisma.documentChunk.deleteMany({ where: { userFileId } });
+    await this.prisma.documentChunk.createMany({
+      data: chunks.map((chunk) => ({
+        userFileId,
+        chunkIndex: chunk.index,
+        content: chunk.content,
+        startMs: chunk.startMs ?? null,
+        endMs: chunk.endMs ?? null,
+      })),
+    });
+  }
+
+  private async runEmbeddingPhase(
+    userFileId: number,
+    chunks: IndexChunk[],
+  ): Promise<void> {
+    const rows = await this.prisma.documentChunk.findMany({
+      where: { userFileId },
+      orderBy: { chunkIndex: 'asc' },
+      select: { chunkIndex: true, content: true, embedding: true },
+    });
+    const pending = rows.filter((r) => !hasChunkEmbedding(r.embedding));
+    const total = chunks.length;
+    const already = total - pending.length;
+
+    await this.patchJob(userFileId, {
+      chunkCount: total,
+      status: 'embedding',
+      progress: 50 + Math.floor((already / Math.max(total, 1)) * 45),
+      progressMsg: `正在生成向量 ${already}/${total}`,
+    });
+
+    if (pending.length === 0) return;
+
+    const embeddings = await embedMany(pending.map((c) => c.content));
+    for (let i = 0; i < pending.length; i++) {
+      await this.prisma.documentChunk.update({
+        where: {
+          userFileId_chunkIndex: {
+            userFileId,
+            chunkIndex: pending[i].chunkIndex,
+          },
+        },
+        data: { embedding: embeddings[i] },
+      });
+      const done = already + i + 1;
+      await this.patchJob(userFileId, {
+        progress: 50 + Math.floor((done / total) * 45),
+        progressMsg: `正在生成向量 ${done}/${total}`,
+      });
+    }
+  }
+
   // BullMQ 回调：每个 job 进队后执行
   async process(job: Job<DocumentIndexJobData>): Promise<void> {
     // 只接受任务名 index，否则抛错
@@ -92,18 +196,26 @@ export class DocumentIndexProcessor extends WorkerHost {
         mimeType: userFile.storage.mimeType,
       };
 
-      type IndexChunk = {
-        index: number;
-        content: string;
-        startMs?: number | null;
-        endMs?: number | null;
-      };
-
       let chunks: IndexChunk[];
       let mediaDurationMs = 0;
       let mediaTranscriptText = '';
-      // 音视频：走 ASR 转写（视频先抽音轨）
-      if (isIndexableMedia(fileRef)) {
+
+      // O-01：探测可续断点（跳过 ASR / 抽文本）
+      const persisted = await this.loadPersistedChunks(userFileId);
+      const resumeFrom = persisted.resumeFrom;
+
+      if (resumeFrom != null) {
+        chunks = persisted.chunks;
+        mediaTranscriptText = chunks.map((c) => c.content).join('');
+        mediaDurationMs = Math.max(
+          0,
+          ...chunks.map((c) => c.endMs ?? 0),
+          ...chunks.map((c) => c.startMs ?? 0),
+        );
+        this.logger.log(
+          `[document-index] resume from=${resumeFrom} skipAsr=true userFileId=${userFileId} chunks=${chunks.length}`,
+        );
+      } else if (isIndexableMedia(fileRef)) {
         const isVideo = isIndexableVideo(fileRef);
         // 更新状态 → extracting
         await this.patchJob(userFileId, {
@@ -175,55 +287,22 @@ export class DocumentIndexProcessor extends WorkerHost {
         );
       }
 
-      // 音视频：转写句已是「块」，补一条 chunking 进度便于前端显示
-      if (isIndexableMedia(fileRef)) {
-        await this.patchJob(userFileId, {
-          status: 'chunking',
-          progress: 30,
-          progressMsg: isIndexableVideo(fileRef)
-            ? '正在写入视频文稿分句'
-            : '正在写入转写分句',
-        });
+      // 全量路径：写入分句；续建路径：复用已有 rows
+      if (resumeFrom == null) {
+        if (isIndexableMedia(fileRef)) {
+          await this.patchJob(userFileId, {
+            status: 'chunking',
+            progress: 30,
+            progressMsg: isIndexableVideo(fileRef)
+              ? '正在写入视频文稿分句'
+              : '正在写入转写分句',
+          });
+        }
+        await this.persistNewChunks(userFileId, chunks);
       }
 
-      // 重试入队时可能已有半截 chunks（例如 embedding 失败后 BullMQ 再次执行 process）
-      await this.prisma.documentChunk.deleteMany({ where: { userFileId } });
-      // 批量插入 documentChunk（此时还没有 embedding；音频带 startMs/endMs）
-      await this.prisma.documentChunk.createMany({
-        data: chunks.map((chunk) => ({
-          userFileId,
-          chunkIndex: chunk.index,
-          content: chunk.content,
-          startMs: chunk.startMs ?? null,
-          endMs: chunk.endMs ?? null,
-        })),
-      });
-      // 更新状态 → embedding，进度 50%，记录 chunk 总数
-      await this.patchJob(userFileId, {
-        chunkCount: chunks.length,
-        status: 'embedding',
-        progress: 50,
-        progressMsg: `正在生成向量 0/${chunks.length}`,
-      });
-      // 一次性把所有 chunk 文本发给 embedding API（比逐条请求更高效）
-      const embeddings = await embedMany(chunks.map((c) => c.content));
-      // 循环：按 (userFileId, chunkIndex) 更新每条 chunk 的向量；进度从 50% 线性涨到 95%
-      for (let i = 0; i < chunks.length; i++) {
-        await this.prisma.documentChunk.update({
-          where: {
-            userFileId_chunkIndex: {
-              userFileId,
-              chunkIndex: chunks[i].index,
-            },
-          },
-          data: { embedding: embeddings[i] },
-        });
-        // 每完成一个 chunk 更新 progressMsg，前端可显示「正在生成向量 3/10」
-        const done = i + 1;
-        await this.patchJob(userFileId, {
-          progress: 50 + Math.floor((done / chunks.length) * 45),
-          progressMsg: `正在生成向量 ${done}/${chunks.length}`,
-        });
+      if (resumeFrom !== 'summarizing') {
+        await this.runEmbeddingPhase(userFileId, chunks);
       }
 
       // 1. 进入 summarizing

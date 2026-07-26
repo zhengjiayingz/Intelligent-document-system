@@ -472,7 +472,11 @@ async function onTriggerIndex() {
   transcriptError.value = ''
   const force =
     indexStatus.value?.status === 'ready' ||
-    indexStatus.value?.status === 'failed'
+    indexStatus.value?.status === 'failed' ||
+    // Worker 强杀后可能卡在 embedding 等 ACTIVE：允许 force 顶替并走断点续建
+    INDEX_ACTIVE.includes(
+      indexStatus.value?.status as (typeof INDEX_ACTIVE)[number],
+    )
   try {
     // 音频先用 novel 体裁占位，与后端 summaryGenre 校验对齐
     const data = await triggerDocumentIndex(props.fileId, 'novel', { force })

@@ -1,24 +1,33 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import type { DocumentIndexMode, DocumentIndexStatus } from '@prisma/client';
 import { PrismaService } from '@/prisma/prisma.service';
-import {
-  isIndexableMedia,
-  isIndexableTextDocument,
-} from '@/files/ai/index/service/text-extractor';
+import { isIndexableMedia, isIndexableTextDocument } from './text-extractor';
 
-import { DocumentIndexQueueService } from '@/files/ai/index/service/document-index-queue.service';
+import { DocumentIndexQueueService } from './document-index-queue.service';
 import {
   isSummaryGenre,
   toIndexMode,
   type SummaryGenreValue,
 } from '@/files/ai/summary/types/summary-genre.types';
 
-import { joinOverlappingChunkContents } from '@/files/ai/index/service/text-chunker';
+import { joinOverlappingChunkContents } from './text-chunker';
+import {
+  assessIndexResume,
+  shouldKeepChunksForResume,
+} from '../utils/index-resume.util';
+import type { DocumentIndexJobData } from '../types/document-index-queue.types';
+
+/** 本地端口类型，避免跨文件类型在 ESLint project 中解析失败 */
+type IndexQueuePort = {
+  removeDocumentIndexJob(userFileId: number): Promise<void>;
+  enqueueDocumentIndex(data: DocumentIndexJobData): Promise<unknown>;
+};
 
 const ACTIVE_STATUSES: DocumentIndexStatus[] = [
   'pending',
@@ -74,7 +83,8 @@ function toStatusDto(job: {
 export class FilesAiIndexService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly indexQueue: DocumentIndexQueueService,
+    @Inject(DocumentIndexQueueService)
+    private readonly indexQueue: IndexQueuePort,
   ) {}
 
   /** POST /api/files/:id/ai/index */
@@ -126,11 +136,7 @@ export class FilesAiIndexService {
     }
 
     // 非 force 时拒绝并发；force（失败重试 / 强制重建）允许顶替
-    if (
-      existing &&
-      ACTIVE_STATUSES.includes(existing.status) &&
-      !force
-    ) {
+    if (existing && ACTIVE_STATUSES.includes(existing.status) && !force) {
       throw new ConflictException('索引任务进行中，请稍后再试');
     }
     if (
@@ -142,9 +148,32 @@ export class FilesAiIndexService {
       throw new ConflictException('检查到文档未更新，无需重新建立索引');
     }
 
+    // O-01：失败/卡住重试时若文稿块可用则保留 chunks，只清摘要与知识；ready+force 仍全量清空
+    const existingChunks = await this.prisma.documentChunk.findMany({
+      where: { userFileId: fileId },
+      select: { chunkIndex: true, content: true, embedding: true },
+      orderBy: { chunkIndex: 'asc' },
+    });
+    const resumeFrom = assessIndexResume(
+      existingChunks,
+      existing?.chunkCount ?? null,
+    );
+    const keepChunks = shouldKeepChunksForResume({
+      force,
+      existingStatus: existing?.status,
+      resumeFrom,
+    });
+    const progressMsg = keepChunks
+      ? resumeFrom === 'summarizing'
+        ? '断点续建：从摘要继续'
+        : '断点续建：从生成向量继续'
+      : '已加入队列';
+
     // ready（内容已变）/ failed / 无记录 → 允许（重新）索引
     await this.prisma.$transaction(async (tx) => {
-      await tx.documentChunk.deleteMany({ where: { userFileId: fileId } });
+      if (!keepChunks) {
+        await tx.documentChunk.deleteMany({ where: { userFileId: fileId } });
+      }
       await tx.documentSummary.deleteMany({ where: { userFileId: fileId } });
       await tx.documentKnowledge.deleteMany({ where: { userFileId: fileId } });
       await tx.documentIndexJob.upsert({
@@ -154,9 +183,9 @@ export class FilesAiIndexService {
           mode, // 用户选的 general/academic
           summaryGenre,
           status: 'pending', //等待 Worker 处理
-          progress: 0, // 进度 0%
-          progressMsg: '已加入队列', // 给前端看的提示
-          chunkCount: 0, // 还没切块
+          progress: keepChunks ? 50 : 0,
+          progressMsg,
+          chunkCount: keepChunks ? existingChunks.length : 0,
           errorMessage: null, // 清掉上次失败信息
         },
         // 更新的时候
@@ -164,9 +193,9 @@ export class FilesAiIndexService {
           mode, // 用户选的 general/academic
           summaryGenre,
           status: 'pending', //等待 Worker 处理
-          progress: 0, // 进度 0%
-          progressMsg: '已加入队列', // 给前端看的提示
-          chunkCount: 0, // 还没切块
+          progress: keepChunks ? 50 : 0,
+          progressMsg,
+          chunkCount: keepChunks ? existingChunks.length : 0,
           errorMessage: null, // 清掉上次失败信息
         },
       });

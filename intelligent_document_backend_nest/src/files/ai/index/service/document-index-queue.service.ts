@@ -6,10 +6,13 @@ import {
   DOCUMENT_INDEX_JOB_NAME,
   DOCUMENT_INDEX_QUEUE_NAME,
   type DocumentIndexJobData,
+  type DocumentIndexQueuePort,
 } from '@/files/ai/index/types/document-index-queue.types';
 
 @Injectable()
-export class DocumentIndexQueueService implements OnModuleDestroy {
+export class DocumentIndexQueueService
+  implements OnModuleDestroy, DocumentIndexQueuePort
+{
   private queue: Queue<DocumentIndexJobData> | null = null;
 
   constructor(private readonly config: ConfigService) {}

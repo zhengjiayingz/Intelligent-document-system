@@ -9,3 +9,9 @@ export type DocumentIndexJobData = {
   mode: 'general' | 'academic';
   summaryGenre: SummaryGenre;
 };
+
+/** 供 API 侧调用的队列端口（避免把 BullMQ Queue 类型泄漏进调用方） */
+export type DocumentIndexQueuePort = {
+  removeDocumentIndexJob(userFileId: number): Promise<void>;
+  enqueueDocumentIndex(data: DocumentIndexJobData): Promise<unknown>;
+};

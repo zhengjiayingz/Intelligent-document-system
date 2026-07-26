@@ -42,10 +42,15 @@ jest.mock('@/files/ai/index/service/text-chunker', () => ({
   chunkText: jest.fn(),
 }));
 
+jest.mock('@/files/ai/index/service/audio-transcript.extractor', () => ({
+  extractAudioTranscriptFromStorage: jest.fn(),
+}));
+
 import { Readable } from 'node:stream';
 import { Job } from 'bullmq';
 import { embedMany } from '@/files/ai/index/provider/embedding.provider';
 import { chunkText } from '@/files/ai/index/service/text-chunker';
+import { extractAudioTranscriptFromStorage } from '@/files/ai/index/service/audio-transcript.extractor';
 import { DocumentIndexProcessor } from '@/files/ai/index/processor/document-index.processor';
 import {
   DOCUMENT_INDEX_JOB_NAME,
@@ -70,12 +75,37 @@ const MINIMAL_PDF = Buffer.from(
 
 const embedManyMock = embedMany as jest.MockedFunction<typeof embedMany>;
 const chunkTextMock = chunkText as jest.MockedFunction<typeof chunkText>;
+const extractAudioMock =
+  extractAudioTranscriptFromStorage as jest.MockedFunction<
+    typeof extractAudioTranscriptFromStorage
+  >;
+
+/** 全量路径：resume 探测空 → embedding 读库 → summary 读库 */
+function mockChunkFindManyFullPath(
+  chunkFindMany: jest.Mock,
+  summaryRows: Array<{
+    chunkIndex: number;
+    chapterNo: number | null;
+    content: string;
+  }>,
+) {
+  const embedRows = summaryRows.map((r) => ({
+    chunkIndex: r.chunkIndex,
+    content: r.content,
+    embedding: null,
+  }));
+  chunkFindMany
+    .mockResolvedValueOnce([]) // resume 探测
+    .mockResolvedValueOnce(embedRows) // embedding 阶段
+    .mockResolvedValueOnce(summaryRows); // summarizing
+}
 
 function createProcessor() {
   const jobUpdate = jest
     .fn<Promise<void>, [DocumentIndexJobUpdateArgs]>()
     .mockResolvedValue(undefined);
   const findFirst = jest.fn();
+  const jobFindUnique = jest.fn().mockResolvedValue({ chunkCount: 0 });
   const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
   const createMany = jest.fn().mockResolvedValue({ count: 0 });
   const chunkUpdate = jest.fn().mockResolvedValue(undefined);
@@ -83,7 +113,7 @@ function createProcessor() {
 
   const prisma = {
     userFile: { findFirst },
-    documentIndexJob: { update: jobUpdate },
+    documentIndexJob: { update: jobUpdate, findUnique: jobFindUnique },
     documentChunk: {
       deleteMany,
       createMany,
@@ -130,9 +160,11 @@ function createProcessor() {
     prisma: {
       findFirst,
       jobUpdate,
+      jobFindUnique,
       deleteMany,
       createMany,
       chunkFindMany,
+      chunkUpdate,
       getReadStream,
     },
     summaryMapReduce,
@@ -174,7 +206,7 @@ describe('DocumentIndexProcessor', () => {
     });
     chunkTextMock.mockReturnValue([{ index: 0, content: ocrText }]);
     embedManyMock.mockResolvedValue([[1, 0, 0]]);
-    prisma.chunkFindMany.mockResolvedValue([
+    mockChunkFindManyFullPath(prisma.chunkFindMany, [
       { chunkIndex: 0, chapterNo: null, content: ocrText },
     ]);
 
@@ -207,7 +239,7 @@ describe('DocumentIndexProcessor', () => {
     );
     chunkTextMock.mockReturnValue([{ index: 0, content: text }]);
     embedManyMock.mockResolvedValue([[1, 0, 0]]);
-    ctx.prisma.chunkFindMany.mockResolvedValue([
+    mockChunkFindManyFullPath(ctx.prisma.chunkFindMany, [
       { chunkIndex: 0, chapterNo: null, content: text },
     ]);
 
@@ -244,5 +276,70 @@ describe('DocumentIndexProcessor', () => {
     const { knowledgeExtract } = await runTxtIndex('novel', 'general');
 
     expect(knowledgeExtract.extractKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('O-01：已有文稿缺向量时应 skipAsr 并补 embedding', async () => {
+    const { processor, prisma, summaryMapReduce } = createProcessor();
+    const logSpy = jest.spyOn(
+      (processor as unknown as { logger: { log: (m: string) => void } })
+        .logger,
+      'log',
+    );
+    prisma.findFirst.mockResolvedValue({
+      fileName: 'clip.mp4',
+      storage: {
+        filePath: 'uploads/clip.mp4',
+        mimeType: 'video/mp4',
+        fileHash: 'vid-hash',
+      },
+    });
+    prisma.jobFindUnique.mockResolvedValue({ chunkCount: 2 });
+    const persisted = [
+      {
+        chunkIndex: 0,
+        content: '第一句文稿',
+        embedding: null,
+        startMs: 0,
+        endMs: 1000,
+      },
+      {
+        chunkIndex: 1,
+        content: '第二句文稿',
+        embedding: null,
+        startMs: 1000,
+        endMs: 2000,
+      },
+    ];
+    prisma.chunkFindMany
+      .mockResolvedValueOnce(persisted) // resume
+      .mockResolvedValueOnce(persisted) // embedding pending
+      .mockResolvedValueOnce([
+        { chunkIndex: 0, chapterNo: null, content: '第一句文稿' },
+        { chunkIndex: 1, chapterNo: null, content: '第二句文稿' },
+      ]);
+    embedManyMock.mockResolvedValue([
+      [1, 0],
+      [0, 1],
+    ]);
+
+    await processor.process(
+      createJob({
+        userFileId: 2618,
+        userId: 2,
+        mode: 'general',
+        summaryGenre: 'novel',
+      }),
+    );
+
+    expect(extractAudioMock).not.toHaveBeenCalled();
+    expect(prisma.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.createMany).not.toHaveBeenCalled();
+    expect(embedManyMock).toHaveBeenCalledWith(['第一句文稿', '第二句文稿']);
+    expect(summaryMapReduce.runMapReduce).toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('resume from=embedding skipAsr=true'),
+    );
+    const statuses = prisma.jobUpdate.mock.calls.map((c) => c[0].data.status);
+    expect(statuses.at(-1)).toBe('ready');
   });
 });
