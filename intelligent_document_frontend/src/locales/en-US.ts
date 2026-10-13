@@ -622,6 +622,12 @@ export default {
     textChunkBytesHint: 'Large files load in segments; scroll to the bottom to load more',
     textChunkReflow:
       'Reflow: join line breaks within paragraphs, wrap to panel width (off = match source newlines)',
+    textNoteAdd: 'Add note',
+    textNoteSave: 'Save',
+    textNoteDelete: 'Delete',
+    textNotePlaceholder: 'Write a note, or leave it blank to highlight only',
+    textNoteStale: 'The source text has changed',
+    textNoteInvalid: 'Invalid selection',
     aiAskTitle: 'Ask AI',
     aiAskHint: 'Select text on the left for context; chat on the right and keep asking follow-ups.',
     aiSelectionDisabledHint:

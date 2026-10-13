@@ -18,7 +18,15 @@ export type VirtualTextSelectionRange = {
 const MIN_SELECTION_LEN = 2
 const MAX_SELECTION_LEN = 8000
 const HIGHLIGHT_NAME = 'vlist-sel'
+const NOTES_HIGHLIGHT_NAME = 'vlist-notes'
 const NEAREST_ROW_MAX_GAP_PX = 80
+
+export type VirtualTextClick = {
+  rowIndex: number
+  offset: number
+  x: number
+  y: number
+}
 
 function isWordChar(ch: string): boolean {
   return /[\p{L}\p{N}_]/u.test(ch)
@@ -210,6 +218,8 @@ export function useVirtualTextSelection(
 ) {
   const selectedText = ref('')
   const selectionRange = ref<VirtualTextSelectionRange | null>(null)
+  const lastClick = ref<VirtualTextClick | null>(null)
+  let noteRanges: VirtualTextSelectionRange[] = []
   let isPointerDown = false
   let anchor: CaretPoint | null = null
   let lastValidFocus: CaretPoint | null = null
@@ -251,6 +261,41 @@ export function useVirtualTextSelection(
       CSS.highlights.delete(HIGHLIGHT_NAME)
     }
     overlayEl?.replaceChildren()
+  }
+
+  function applyStoredNoteHighlights() {
+    if (!supportsCssHighlight()) return
+    const root = getRoot()
+    if (!root) {
+      CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
+      return
+    }
+    const ranges: Range[] = []
+    for (const range of noteRanges) {
+      ranges.push(...buildSelectionRanges(root, rowsRef.value, range))
+    }
+    if (ranges.length === 0) {
+      CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
+      return
+    }
+    CSS.highlights.set(NOTES_HIGHLIGHT_NAME, new Highlight(...ranges))
+  }
+
+  function setNoteHighlights(ranges: VirtualTextSelectionRange[]) {
+    noteRanges = ranges
+    applyStoredNoteHighlights()
+  }
+
+  function measureSelectionRect(): DOMRect | null {
+    const root = getRoot()
+    const range = selectionRange.value
+    if (!root || !range) return null
+    const ranges = buildSelectionRanges(root, rowsRef.value, range)
+    for (const item of ranges) {
+      const rect = item.getBoundingClientRect()
+      if (rect.width > 0 || rect.height > 0) return rect
+    }
+    return null
   }
 
   function renderOverlayRects(ranges: Range[]) {
@@ -565,6 +610,11 @@ export function useVirtualTextSelection(
     if (!isPointerDown) return
     isPointerDown = false
     releasePointerCapture(ev.pointerId)
+    if (!pointerMoved && anchor) {
+      lastClick.value = { ...anchor, x: ev.clientX, y: ev.clientY }
+    } else {
+      lastClick.value = null
+    }
     anchor = null
     lastValidFocus = null
     if (!pointerMoved) {
@@ -590,8 +640,8 @@ export function useVirtualTextSelection(
   }
 
   function onScrollReposition() {
-    if (!selectionRange.value) return
-    applyVisualHighlight(selectionRange.value)
+    if (selectionRange.value) applyVisualHighlight(selectionRange.value)
+    applyStoredNoteHighlights()
   }
 
   function attachSelectionListeners() {
@@ -639,16 +689,21 @@ export function useVirtualTextSelection(
     overlayEl?.remove()
     overlayEl = null
     clearVisualHighlight()
+    if (supportsCssHighlight()) CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
   })
 
   return {
     selectedText,
     selectionRange,
+    lastClick,
     attachSelectionListeners,
     detachSelectionListeners,
     clearSelection,
+    setNoteHighlights,
+    measureSelectionRect,
     refreshVisualHighlight: () => {
       if (selectionRange.value) applyVisualHighlight(selectionRange.value)
+      applyStoredNoteHighlights()
     },
   }
 }

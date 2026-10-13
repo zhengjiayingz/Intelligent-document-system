@@ -47,6 +47,29 @@
             {{ t('preview.textChunkLoadMore') }}
           </el-button>
         </div>
+        <div v-if="visible && popoverPos" class="text-note-popover" :style="{ top: `${popoverPos.top}px`, left: `${popoverPos.left}px` }"
+          @pointerdown.stop>
+          <el-button v-if="selectionRange && !noteCard" size="small" type="primary" @click="openCreateCard">
+            {{ t('preview.textNoteAdd') }}
+          </el-button>
+          <div v-else-if="noteCard" class="text-note-card">
+            <p v-if="openNoteStale" class="text-note-stale">{{ t('preview.textNoteStale') }}</p>
+            <el-input v-model="noteDraft" type="textarea" :rows="3" maxlength="2000"
+              :placeholder="t('preview.textNotePlaceholder')" />
+            <div class="text-note-card__actions">
+              <el-button v-if="noteCard.mode === 'edit'" size="small" type="danger" plain :disabled="saving"
+                @click="deleteOpenNote">
+                {{ t('preview.textNoteDelete') }}
+              </el-button>
+              <el-button size="small" :disabled="saving" @click="closeNoteCard">
+                {{ t('common.cancel') }}
+              </el-button>
+              <el-button size="small" type="primary" :loading="saving" @click="saveNote">
+                {{ t('preview.textNoteSave') }}
+              </el-button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="preview-split__right">
@@ -61,32 +84,24 @@
 import { ref, computed, watch, nextTick, onUnmounted, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import fileApiService from '@api/file'
+import { ElMessage } from 'element-plus'
+import fileApiService, { type FileTextNote } from '@api/file'
 import DocumentAiPanel from '@components/DocumentAiPanel/index.vue'
-import { useVirtualTextSelection } from '@/composables/useVirtualTextSelection'
+import {
+  useVirtualTextSelection,
+  type VirtualTextSelectionRange,
+} from '@/composables/useVirtualTextSelection'
+import {
+  buildMappedRows,
+  caretToSource,
+  normalizeNewlines,
+  noteAnchorFromSelection,
+  noteStatus,
+  pickNoteAtCaret,
+  sourceRangeToRows,
+} from '@/utils/textNoteAnchor'
 
 const CHUNK_BYTES = 256 * 1024
-/** 无换行超长行切段，避免单行 DOM 仍过高 */
-const VIRTUAL_MAX_LINE = 4000
-
-/**
- * 将常见 txt 中「为纸宽折行」的段内单换行合并，段落仍以空行分隔；合并在宽屏上由 pre-wrap 按容器宽度重排
- */
-function reflowBookText(s: string): string {
-  const t = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-  if (!t.trim()) return ''
-  const blocks = t.split(/\n(?:[ \t\u3000]*\n)+/)
-  return blocks
-    .map((block) =>
-      block
-        .split('\n')
-        .map((line) => line.replace(/[ \t\u3000]+$/g, ''))
-        .join('')
-    )
-    .map((b) => b.trim())
-    .filter((b) => b.length > 0)
-    .join('\n\n')
-}
 
 const props = defineProps<{
   modelValue: boolean
@@ -114,51 +129,10 @@ const rawText = ref('')
 /** 为 true 时按空行分段后合并段内换行，适合纸宽排版的小说；为 false 时与文件换行一致 */
 const reflowForReading = ref(true)
 
-const lineRows = computed(() => {
-  const raw = rawText.value
-  if (!raw) return []
-  if (!reflowForReading.value) {
-    return raw.split(/\r?\n/)
-  }
-  const merged = reflowBookText(raw)
-  if (!merged) return []
-  return merged.split(/\n\n+/)
-})
-
+const normalizedText = computed(() => normalizeNewlines(rawText.value))
+const mappedRows = computed(() => buildMappedRows(normalizedText.value, reflowForReading.value))
 /** 展示行；indentFirstLine 仅对自然段首行（2 字）缩进，超长段 4k 续块不缩进 */
-type DisplayRow = { text: string; indentFirstLine: boolean; isBlank?: boolean }
-
-const displayRows = computed((): DisplayRow[] => {
-  const rows = lineRows.value
-  const out: DisplayRow[] = []
-  const reflow = reflowForReading.value
-
-  for (let r = 0; r < rows.length; r++) {
-    const line = rows[r]!
-    if (line.length === 0) {
-      out.push({ text: '', indentFirstLine: false, isBlank: true })
-      continue
-    }
-
-    const isNaturalParaStart = reflow
-      ? true
-      : r === 0 || (r > 0 && String(rows[r - 1] ?? '').trim() === '')
-
-    if (line.length <= VIRTUAL_MAX_LINE) {
-      out.push({ text: line, indentFirstLine: isNaturalParaStart })
-      continue
-    }
-
-    for (let i = 0; i < line.length; i += VIRTUAL_MAX_LINE) {
-      const chunk = line.slice(i, i + VIRTUAL_MAX_LINE)
-      out.push({
-        text: chunk,
-        indentFirstLine: isNaturalParaStart && i === 0
-      })
-    }
-  }
-  return out
-})
+const displayRows = computed(() => mappedRows.value)
 
 const nextOffset = ref(0)
 const totalSize = ref(0)
@@ -170,14 +144,244 @@ const loadError = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const fileEncoding = ref<'utf-8' | 'gb18030' | undefined>(undefined)
 const aiPanelRef = ref<InstanceType<typeof DocumentAiPanel> | null>(null)
+const notes = ref<FileTextNote[]>([])
+const noteDraft = ref('')
+const noteCard = ref<{ mode: 'create' } | { mode: 'edit'; id: number } | null>(null)
+const popoverPos = ref<{ top: number; left: number } | null>(null)
+const popoverPoint = ref<{ x: number; y: number; scrollTop: number; scrollLeft: number } | null>(null)
+const saving = ref(false)
+let noteLoadGen = 0
 
 const {
   selectedText,
+  selectionRange,
+  lastClick,
   attachSelectionListeners,
   detachSelectionListeners,
   clearSelection,
   refreshVisualHighlight,
+  setNoteHighlights,
+  measureSelectionRect,
 } = useVirtualTextSelection(scrollRef, displayRows)
+
+const readyNotes = computed(() =>
+  notes.value.filter((note) => noteStatus(normalizedText.value, note, done.value) === 'ready'),
+)
+
+const openNoteStale = computed(() => {
+  const card = noteCard.value
+  if (card?.mode !== 'edit') return false
+  const note = notes.value.find((item) => item.id === card.id)
+  if (!note) return false
+  return noteStatus(normalizedText.value, note, done.value) === 'stale'
+})
+
+function highlightRangesForNote(startOffset: number, endOffset: number): VirtualTextSelectionRange[] {
+  const spans = sourceRangeToRows(mappedRows.value, startOffset, endOffset)
+  if (spans.length === 0) return []
+  const first = spans[0]!
+  const last = spans[spans.length - 1]!
+  return [
+    {
+      start: { rowIndex: first.rowIndex, offset: first.from },
+      end: { rowIndex: last.rowIndex, offset: last.to },
+    },
+  ]
+}
+
+const noteHighlightRanges = computed(() =>
+  readyNotes.value.flatMap((note) => highlightRangesForNote(note.startOffset, note.endOffset)),
+)
+
+const POPOVER_MARGIN = 8
+
+function placeFixed(x: number, y: number, width: number, height: number) {
+  const maxLeft = Math.max(POPOVER_MARGIN, window.innerWidth - width - POPOVER_MARGIN)
+  const left = Math.min(Math.max(POPOVER_MARGIN, x), maxLeft)
+  let top = y + POPOVER_MARGIN
+  if (top + height > window.innerHeight - POPOVER_MARGIN) {
+    top = y - height - POPOVER_MARGIN
+  }
+  if (top < POPOVER_MARGIN) top = POPOVER_MARGIN
+  return { top, left }
+}
+
+function applyAnchor(x: number, y: number) {
+  const card = !!noteCard.value
+  popoverPos.value = placeFixed(x, y, card ? 260 : 108, card ? 200 : 32)
+}
+
+function selectionAnchor(): { x: number; y: number } | null {
+  const root = scrollRef.value
+  const rect = measureSelectionRect()
+  if (!root || !rect) return null
+  const view = root.getBoundingClientRect()
+  if (rect.bottom < view.top || rect.top > view.bottom) return null
+  return { x: rect.left, y: rect.bottom }
+}
+
+function editAnchor(): { x: number; y: number } | null {
+  const card = noteCard.value
+  if (card?.mode !== 'edit' || !scrollRef.value) return null
+  const note = notes.value.find((item) => item.id === card.id)
+  if (!note) return null
+  const first = sourceRangeToRows(mappedRows.value, note.startOffset, note.endOffset)[0]
+  if (!first) return null
+  const rowEl = scrollRef.value.querySelector<HTMLElement>(`[data-index="${first.rowIndex}"]`)
+  if (!rowEl) return null
+  const rect = rowEl.getBoundingClientRect()
+  const view = scrollRef.value.getBoundingClientRect()
+  if (rect.bottom < view.top || rect.top > view.bottom) return null
+  return { x: rect.left, y: rect.top }
+}
+
+function pinPopover(x: number, y: number) {
+  popoverPoint.value = {
+    x,
+    y,
+    scrollTop: scrollRef.value?.scrollTop ?? 0,
+    scrollLeft: scrollRef.value?.scrollLeft ?? 0,
+  }
+  applyAnchor(x, y)
+}
+
+function syncPopover() {
+  if (noteCard.value?.mode === 'edit') {
+    const pinned = popoverPoint.value
+    const root = scrollRef.value
+    if (pinned && root) {
+      applyAnchor(pinned.x - (root.scrollLeft - pinned.scrollLeft), pinned.y - (root.scrollTop - pinned.scrollTop))
+      return
+    }
+    const point = editAnchor()
+    if (point) applyAnchor(point.x, point.y)
+    return
+  }
+  if (noteCard.value?.mode === 'create' || selectionRange.value) {
+    const point = selectionAnchor()
+    if (point) {
+      applyAnchor(point.x, point.y)
+      return
+    }
+    if (!noteCard.value) popoverPos.value = null
+    return
+  }
+  popoverPos.value = null
+}
+
+function closeNoteCard() {
+  noteCard.value = null
+  noteDraft.value = ''
+  popoverPoint.value = null
+  void nextTick(() => syncPopover())
+}
+
+function openCreateCard() {
+  if (!selectionRange.value) return
+  noteDraft.value = ''
+  noteCard.value = { mode: 'create' }
+  syncPopover()
+}
+
+function draftContent(): string | null {
+  const text = noteDraft.value.trim()
+  return text ? text : null
+}
+
+function apiMessage(error: unknown, fallback: string) {
+  const message = (error as { response?: { data?: { message?: string | string[] } } })?.response?.data
+    ?.message
+  if (Array.isArray(message)) return message.join('，')
+  return message || fallback
+}
+
+async function saveNote() {
+  if (!noteCard.value || saving.value) return
+  const card = noteCard.value
+  saving.value = true
+  try {
+    if (card.mode === 'create') {
+      const range = selectionRange.value
+      if (!range) {
+        ElMessage.warning(t('preview.textNoteInvalid'))
+        return
+      }
+      const anchor = noteAnchorFromSelection(normalizedText.value, mappedRows.value, range)
+      if (
+        anchor.startOffset >= anchor.endOffset ||
+        anchor.quote.length > 8000 ||
+        anchor.quote.length !== anchor.endOffset - anchor.startOffset
+      ) {
+        ElMessage.warning(t('preview.textNoteInvalid'))
+        return
+      }
+      const created = await fileApiService.createTextNote(props.fileId, {
+        ...anchor,
+        content: draftContent(),
+      })
+      notes.value = [...notes.value, created]
+      clearSelection()
+      closeNoteCard()
+    } else {
+      const updated = await fileApiService.updateTextNote(props.fileId, card.id, draftContent())
+      notes.value = notes.value.map((note) => (note.id === updated.id ? updated : note))
+      closeNoteCard()
+    }
+  } catch (error: unknown) {
+    ElMessage.error(apiMessage(error, t('preview.textChunkError')))
+  } finally {
+    saving.value = false
+  }
+}
+
+async function deleteOpenNote() {
+  if (noteCard.value?.mode !== 'edit' || saving.value) return
+  const noteId = noteCard.value.id
+  saving.value = true
+  try {
+    await fileApiService.deleteTextNote(props.fileId, noteId)
+    notes.value = notes.value.filter((note) => note.id !== noteId)
+    closeNoteCard()
+  } catch (error: unknown) {
+    ElMessage.error(apiMessage(error, t('preview.textChunkError')))
+  } finally {
+    saving.value = false
+  }
+}
+
+watch(noteHighlightRanges, (ranges) => {
+  setNoteHighlights(ranges)
+}, { flush: 'post' })
+
+watch(selectionRange, (range) => {
+  if (range && noteCard.value?.mode === 'edit') closeNoteCard()
+  if (!range && noteCard.value?.mode === 'create') closeNoteCard()
+  void nextTick(() => syncPopover())
+})
+
+watch(lastClick, (click) => {
+  if (!click) return
+  const row = mappedRows.value[click.rowIndex]
+  if (!row) {
+    if (noteCard.value?.mode === 'edit') closeNoteCard()
+    return
+  }
+  const source = caretToSource(row, click.offset)
+  const hit = pickNoteAtCaret(readyNotes.value, source)
+  if (!hit) {
+    if (noteCard.value?.mode === 'edit') closeNoteCard()
+    else if (noteCard.value?.mode === 'create' && !selectionRange.value) closeNoteCard()
+    return
+  }
+  clearSelection()
+  noteDraft.value = hit.content ?? ''
+  noteCard.value = { mode: 'edit', id: hit.id }
+  pinPopover(click.x, click.y)
+})
+
+watch(reflowForReading, () => {
+  popoverPoint.value = null
+})
 
 const virtualizer = useVirtualizer(
   computed(() => ({
@@ -218,6 +422,7 @@ function scheduleRemeasure() {
     requestAnimationFrame(() => {
       virtualizer.value.measure()
       refreshVisualHighlight()
+      syncPopover()
     })
   })
 }
@@ -227,19 +432,26 @@ watch(displayRows, () => {
   refreshVisualHighlight()
 }, { flush: 'post' })
 
+function onWindowResize() {
+  syncPopover()
+}
+
 function onDialogOpened() {
   attachScrollSizeObserver()
   attachSelectionListeners()
+  window.addEventListener('resize', onWindowResize)
   scheduleRemeasure()
   setTimeout(() => virtualizer.value.measure(), 100)
 }
 
 onUnmounted(() => {
   resizeUnsub?.()
+  window.removeEventListener('resize', onWindowResize)
   detachSelectionListeners()
 })
 
 function reset() {
+  noteLoadGen += 1
   aiPanelRef.value?.reset()
   detachSelectionListeners()
   clearSelection()
@@ -255,6 +467,14 @@ function reset() {
   appending.value = false
   loadError.value = ''
   fileEncoding.value = undefined
+  notes.value = []
+  noteCard.value = null
+  noteDraft.value = ''
+  popoverPos.value = null
+  popoverPoint.value = null
+  saving.value = false
+  window.removeEventListener('resize', onWindowResize)
+  setNoteHighlights([])
 }
 
 async function fetchChunk(fromOffset: number) {
@@ -268,9 +488,14 @@ async function fetchChunk(fromOffset: number) {
 
 async function onOpen() {
   reset()
+  const gen = noteLoadGen
   initialLoading.value = true
   loadError.value = ''
   aiPanelRef.value?.activate()
+  const notesPromise = fileApiService.listTextNotes(props.fileId).catch((error: unknown) => {
+    if (gen === noteLoadGen) ElMessage.error(apiMessage(error, t('preview.textChunkError')))
+    return [] as FileTextNote[]
+  })
   try {
     const data = await fetchChunk(0)
     if (data.fileEncoding) fileEncoding.value = data.fileEncoding
@@ -286,6 +511,11 @@ async function onOpen() {
     await nextTick()
     scheduleRemeasure()
   }
+  const listed = await notesPromise
+  if (gen !== noteLoadGen) return
+  notes.value = listed
+  await nextTick()
+  refreshVisualHighlight()
 }
 
 async function loadNext() {
@@ -314,6 +544,7 @@ async function loadNext() {
 const SCROLL_LOAD_THRESHOLD = 200
 
 function onScroll() {
+  syncPopover()
   const el = scrollRef.value
   if (!el || done.value || loadingMore.value || initialLoading.value) return
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_LOAD_THRESHOLD) {
@@ -325,6 +556,11 @@ function onScroll() {
 <style lang="scss">
 ::highlight(vlist-sel) {
   background: rgba(64, 158, 255, 0.35);
+  color: inherit;
+}
+
+::highlight(vlist-notes) {
+  background: rgba(255, 214, 102, 0.55);
   color: inherit;
 }
 </style>
@@ -356,12 +592,43 @@ function onScroll() {
 }
 
 .preview-split__left {
+  position: relative;
   flex: 1 1 56%;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.text-note-popover {
+  position: fixed;
+  z-index: 20;
+  max-width: 280px;
+}
+
+.text-note-card {
+  width: 260px;
+  padding: 10px;
+  background: var(--el-bg-color-overlay, #fff);
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+  box-shadow: var(--el-box-shadow-light);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.text-note-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.text-note-stale {
+  margin: 0;
+  font-size: 12px;
+  color: var(--el-color-warning);
 }
 
 .preview-split__right {
