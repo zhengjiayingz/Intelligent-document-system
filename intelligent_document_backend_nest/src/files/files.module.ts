@@ -24,6 +24,8 @@ import { FilesQueryController } from './query/files-query.controller';
 import { FilesQueryService } from './query/files-query.service';
 import { FilesTagController } from './tag/files-tag.controller';
 import { FilesTagService } from './tag/files-tag.service';
+import { FilesTextNoteController } from './notes/files-text-note.controller';
+import { FilesTextNoteService } from './notes/files-text-note.service';
 import { FilesAiRagService } from '@/files/ai/chat/service/files-ai-rag.service';
 import { FilesAiSummaryService } from '@/files/ai/summary/service/files-ai-summary.service';
 import { FilesAiKnowledgeService } from '@/files/ai/knowledge/service/files-ai-knowledge.service';
@@ -46,6 +48,7 @@ import { FilesAiAssistantService } from '@/files/ai/assistant/service/files-ai-a
   controllers: [
     FilesUploadController,
     FilesTagController,
+    FilesTextNoteController,
     FilesVersionController,
     FilesArchiveController,
     FilesAiController,
@@ -69,6 +72,7 @@ import { FilesAiAssistantService } from '@/files/ai/assistant/service/files-ai-a
     FilesDuplicatesService,
     FilesManageService,
     FilesTagService,
+    FilesTextNoteService,
     FilesAiService,
     FilesAiIndexService,
     FilesAiRagService,
