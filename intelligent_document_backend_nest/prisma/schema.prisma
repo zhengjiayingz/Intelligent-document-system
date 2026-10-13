@@ -58,6 +58,7 @@ model User {
   knowledgeBases KnowledgeBase[]
   wrongQuestionBookItems WrongQuestionBookItem[]
   fileAiChatSessions FileAiChatSession[]
+  fileTextNotes FileTextNote[]
   mathTempImages MathTempImage[]
   tempAiChatSessions TempAiChatSession[]
   fileFingerprints FileFingerprint[]
@@ -183,10 +184,29 @@ model UserFile {
   wrongQuestionBookItems WrongQuestionBookItem[]
   fileAiChatSessions FileAiChatSession[]
   fileFingerprint FileFingerprint?
+  fileTextNotes FileTextNote[]
 
   @@index([userId, parentId, isDeleted])
   @@index([storageId])
   @@map("user_files")
+}
+
+model FileTextNote {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  userFileId  Int      @map("user_file_id")
+  startOffset Int      @map("start_offset")
+  endOffset   Int      @map("end_offset")
+  quote       String   @db.VarChar(8000)
+  content     String?  @db.VarChar(2000)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userFile UserFile @relation(fields: [userFileId], references: [id], onDelete: Cascade)
+
+  @@index([userId, userFileId])
+  @@map("file_text_notes")
 }
 
 model UploadChunk {
