@@ -38,9 +38,7 @@ describe('file.utils streaming hash / merge', () => {
     const md5 = await concatenateFilesWithMd5([a, b], dest);
     const merged = fs.readFileSync(dest);
     expect(merged.equals(Buffer.concat([partA, partB]))).toBe(true);
-    expect(md5).toBe(
-      crypto.createHash('md5').update(merged).digest('hex'),
-    );
+    expect(md5).toBe(crypto.createHash('md5').update(merged).digest('hex'));
     expect(calculateFileHash(dest)).toBe(md5);
   });
 
