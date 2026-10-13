@@ -12,6 +12,16 @@ import type {
   DuplicatesScanResult,
 } from '@typing/file'
 
+export type FileTextNote = {
+  id: number
+  startOffset: number
+  endOffset: number
+  quote: string
+  content: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 // 上传进度回调类型
 export interface UploadProgress {
   loaded: number
@@ -390,6 +400,28 @@ async scanDuplicateFiles(): Promise<DuplicatesScanResult> {
       }
     })
     return res.data.data
+  },
+
+  async listTextNotes(fileId: number): Promise<FileTextNote[]> {
+    const res = await request.get<FileTextNote[]>(`/files/${fileId}/text-notes`)
+    return res.data
+  },
+
+  async createTextNote(
+    fileId: number,
+    body: { startOffset: number; endOffset: number; quote: string; content?: string | null }
+  ): Promise<FileTextNote> {
+    const res = await request.post<FileTextNote>(`/files/${fileId}/text-notes`, body)
+    return res.data
+  },
+
+  async updateTextNote(fileId: number, noteId: number, content: string | null): Promise<FileTextNote> {
+    const res = await request.patch<FileTextNote>(`/files/${fileId}/text-notes/${noteId}`, { content })
+    return res.data
+  },
+
+  async deleteTextNote(fileId: number, noteId: number): Promise<void> {
+    await request.delete(`/files/${fileId}/text-notes/${noteId}`)
   }
 }
 
