@@ -265,19 +265,17 @@ export function useVirtualTextSelection(
 
   function applyStoredNoteHighlights() {
     if (!supportsCssHighlight()) return
-    const root = getRoot()
-    if (!root) {
+    if (noteRanges.length === 0) {
       CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
       return
     }
+    const root = getRoot()
+    if (!root) return
     const ranges: Range[] = []
     for (const range of noteRanges) {
       ranges.push(...buildSelectionRanges(root, rowsRef.value, range))
     }
-    if (ranges.length === 0) {
-      CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
-      return
-    }
+    if (ranges.length === 0) return
     CSS.highlights.set(NOTES_HIGHLIGHT_NAME, new Highlight(...ranges))
   }
 

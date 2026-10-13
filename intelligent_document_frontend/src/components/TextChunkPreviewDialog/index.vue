@@ -421,11 +421,20 @@ function scheduleRemeasure() {
   void nextTick(() => {
     requestAnimationFrame(() => {
       virtualizer.value.measure()
-      refreshVisualHighlight()
-      syncPopover()
+      void nextTick(() => {
+        requestAnimationFrame(() => {
+          refreshVisualHighlight()
+          syncPopover()
+        })
+      })
     })
   })
 }
+
+watch(virtualItems, () => {
+  setNoteHighlights(noteHighlightRanges.value)
+  refreshVisualHighlight()
+}, { flush: 'post' })
 
 watch(displayRows, () => {
   scheduleRemeasure()
