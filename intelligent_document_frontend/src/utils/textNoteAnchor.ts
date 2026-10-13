@@ -110,8 +110,8 @@ function collapseBlock(segs: { ch: string; source: number }[]): { ch: string; so
   }
   let start = 0
   let end = joined.length
-  while (start < end && /[ \t\u3000]/.test(joined[start]!.ch)) start++
-  while (end > start && /[ \t\u3000]/.test(joined[end - 1]!.ch)) end--
+  while (start < end && joined[start]!.ch.trim() === '') start++
+  while (end > start && joined[end - 1]!.ch.trim() === '') end--
   return joined.slice(start, end)
 }
 

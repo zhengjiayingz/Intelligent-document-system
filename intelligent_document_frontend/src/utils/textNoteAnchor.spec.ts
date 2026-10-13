@@ -75,4 +75,20 @@ describe('textNoteAnchor', () => {
     expect(caretToSource(rows[0]!, 2)).toBe(2)
     expect(caretToSource(rows[1]!, 0)).toBe(3)
   })
+
+  it('流式重排的段首尾按 String.trim 去掉不间断空格', () => {
+    const wrapped = buildMappedRows('\u00A0hello\u00A0', true)
+    expect(wrapped[0]!.text).toBe('hello')
+    expect(wrapped[0]!.charSources).toEqual([1, 2, 3, 4, 5])
+    expect(wrapped[0]!.endSource).toBe(6)
+
+    expect(buildMappedRows('hello\n\n\u00A0world', true).map((row) => row.text)).toEqual([
+      'hello',
+      'world',
+    ])
+    expect(buildMappedRows('hello\n\n\u00A0\n\nworld', true).map((row) => row.text)).toEqual([
+      'hello',
+      'world',
+    ])
+  })
 })
