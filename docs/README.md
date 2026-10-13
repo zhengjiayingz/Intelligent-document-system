@@ -13,6 +13,7 @@
 | [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) | Swagger 使用说明与常见问题 |
 | [NODE_BACKEND_实施任务清单.md](./NODE_BACKEND_实施任务清单.md) | 补强实施任务清单（按阶段勾选） |
 | [PERFORMANCE_NOTES.md](./PERFORMANCE_NOTES.md) | 登录压测环境与结果笔记 |
+| [OPTIMIZATION.md](./OPTIMIZATION.md) | **优化清单**：安全、性能、架构、前端 Bundle、CI/测试（含进度跟踪表） |
 | [notes/SOCKET_MULTI_INSTANCE.md](./notes/SOCKET_MULTI_INSTANCE.md) | **阶段二 2.3**：Socket.IO Redis Adapter 多实例广播说明与本地验收 |
 | [notes/MIME_SNIFFING.md](./notes/MIME_SNIFFING.md) | **阶段三 3.1**：MIME 嗅探攻击与 `nosniff` 说明 |
 | [notes/HELMET.md](./notes/HELMET.md) | **阶段三 3.1**：Helmet 中间件与安全响应头对照 |

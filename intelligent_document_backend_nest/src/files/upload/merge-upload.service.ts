@@ -4,7 +4,11 @@ import jschardet from 'jschardet';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PrismaService } from '@/prisma/prisma.service';
-import { calculateFileHash, ensureDirectoryExists } from '../utils/file.utils';
+import {
+  calculateFileHash,
+  concatenateFilesWithMd5,
+  ensureDirectoryExists,
+} from '../utils/file.utils';
 import {
   getUploadRootDir,
   resolveStorageFilePath,
@@ -137,24 +141,18 @@ export class MergeUploadService {
     }
 
     const finalFilePath = this.buildFinalFilePath(fileHash, fileName);
-    const writeStream = fs.createWriteStream(finalFilePath);
+    const chunkAbsPaths = uploadedChunks.map((chunk) =>
+      resolveStorageFilePath(chunk.chunkPath),
+    );
 
-    for (const chunk of uploadedChunks) {
-      const chunkData = fs.readFileSync(
-        resolveStorageFilePath(chunk.chunkPath),
-      );
-      writeStream.write(chunkData);
-    }
-    writeStream.end();
-
-    await new Promise<void>((resolve, reject) => {
-      writeStream.on('finish', () => resolve());
-      writeStream.on('error', reject);
-    });
-
-    const mergedFileHash = calculateFileHash(finalFilePath);
+    const mergedFileHash = await concatenateFilesWithMd5(
+      chunkAbsPaths,
+      finalFilePath,
+    );
     if (mergedFileHash !== fileHash) {
-      fs.unlinkSync(finalFilePath);
+      if (fs.existsSync(finalFilePath)) {
+        fs.unlinkSync(finalFilePath);
+      }
       throw new MergeUploadError('文件合并失败，哈希值不匹配', 400);
     }
 

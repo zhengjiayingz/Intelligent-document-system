@@ -20,6 +20,46 @@ const MAX_SELECTION_LEN = 8000
 const HIGHLIGHT_NAME = 'vlist-sel'
 const NEAREST_ROW_MAX_GAP_PX = 80
 
+function isWordChar(ch: string): boolean {
+  return /[\p{L}\p{N}_]/u.test(ch)
+}
+
+/** 光标落在单词内部或右边界时，返回该词在行内的 [start, end) */
+export function wordRangeAtOffset(text: string, offset: number): { start: number; end: number } | null {
+  if (!text) return null
+
+  const probes = [offset, offset - 1]
+  for (const probe of probes) {
+    const charIndex = probe >= text.length ? text.length - 1 : probe
+    const range = wordContaining(text, charIndex)
+    if (range) return range
+  }
+  return null
+}
+
+function wordContaining(text: string, charIndex: number): { start: number; end: number } | null {
+  if (charIndex < 0 || charIndex >= text.length) return null
+
+  const Segmenter = Intl.Segmenter
+  if (typeof Segmenter === 'function') {
+    const segmenter = new Segmenter('zh-CN', { granularity: 'word' })
+    for (const seg of segmenter.segment(text)) {
+      const end = seg.index + seg.segment.length
+      if (charIndex < seg.index || charIndex >= end) continue
+      if (!seg.isWordLike) return null
+      return { start: seg.index, end }
+    }
+    return null
+  }
+
+  if (!isWordChar(text[charIndex]!)) return null
+  let start = charIndex
+  let end = charIndex + 1
+  while (start > 0 && isWordChar(text[start - 1]!)) start -= 1
+  while (end < text.length && isWordChar(text[end]!)) end += 1
+  return { start, end }
+}
+
 function caretFromPoint(clientX: number, clientY: number): { node: Node; offset: number } | null {
   const doc = document as Document & {
     caretRangeFromPoint?: (x: number, y: number) => Range | null
@@ -162,6 +202,7 @@ function buildSelectionRanges(
 /**
  * 虚拟列表多行划词：每行 absolute 定位时浏览器原生选区无法跨行延伸，
  * 用 pointer 锚点 + CSS Highlight / 覆盖层保证连续高亮，文本 DOM 保持稳定。
+ * 双击则选中光标所在单词（中英文按词切分），不进入拖拽划词。
  */
 export function useVirtualTextSelection(
   scrollRef: Ref<HTMLElement | null | undefined>,
@@ -173,6 +214,15 @@ export function useVirtualTextSelection(
   let anchor: CaretPoint | null = null
   let lastValidFocus: CaretPoint | null = null
   let overlayEl: HTMLElement | null = null
+  /** pointerdown 里 preventDefault 会让浏览器不再累计 detail，双击要自己记 */
+  const DBLCLICK_MS = 500
+  const DBLCLICK_SLOP_PX = 8
+  let lastClickAt = 0
+  let lastClickX = 0
+  let lastClickY = 0
+  let downX = 0
+  let downY = 0
+  let pointerMoved = false
 
   function getRoot(): HTMLElement | null {
     return scrollRef.value ?? null
@@ -257,6 +307,37 @@ export function useVirtualTextSelection(
       .trim()
 
     if (!text || text.length < MIN_SELECTION_LEN) {
+      selectionRange.value = null
+      selectedText.value = ''
+      clearVisualHighlight()
+      return
+    }
+
+    selectionRange.value = { start, end }
+    selectedText.value = text.length > MAX_SELECTION_LEN ? text.slice(0, MAX_SELECTION_LEN) : text
+    applyVisualHighlight({ start, end })
+    clearNativeSelection()
+  }
+
+  function selectWordAt(rowIndex: number, offset: number) {
+    const rowText = rowsRef.value[rowIndex]?.text ?? ''
+    const bounds = wordRangeAtOffset(rowText, offset)
+
+    isPointerDown = false
+    anchor = null
+    lastValidFocus = null
+
+    if (!bounds) {
+      selectionRange.value = null
+      selectedText.value = ''
+      clearVisualHighlight()
+      return
+    }
+
+    const start = { rowIndex, offset: bounds.start }
+    const end = { rowIndex, offset: bounds.end }
+    const text = rowText.slice(bounds.start, bounds.end).replace(/\u00a0/g, ' ')
+    if (!text) {
       selectionRange.value = null
       selectedText.value = ''
       clearVisualHighlight()
@@ -436,10 +517,24 @@ export function useVirtualTextSelection(
 
     ev.preventDefault()
 
+    const offset = offsetInRowAtX(row, rowIndex, ev.clientX, ev.clientY)
+    const now = performance.now()
+    const isDoubleClick =
+      now - lastClickAt <= DBLCLICK_MS &&
+      Math.hypot(ev.clientX - lastClickX, ev.clientY - lastClickY) <= DBLCLICK_SLOP_PX
+    pointerMoved = false
+    downX = ev.clientX
+    downY = ev.clientY
+    if (isDoubleClick) {
+      lastClickAt = 0
+      selectWordAt(rowIndex, offset)
+      return
+    }
+
     isPointerDown = true
     anchor = {
       rowIndex,
-      offset: offsetInRowAtX(row, rowIndex, ev.clientX, ev.clientY),
+      offset,
     }
     lastValidFocus = { ...anchor }
 
@@ -455,6 +550,9 @@ export function useVirtualTextSelection(
 
   function onDocumentPointerMove(ev: PointerEvent) {
     if (!isPointerDown || !anchor) return
+    if (Math.hypot(ev.clientX - downX, ev.clientY - downY) > DBLCLICK_SLOP_PX) {
+      pointerMoved = true
+    }
     ev.preventDefault()
 
     const focus = resolveCaretPoint(ev.clientX, ev.clientY)
@@ -469,6 +567,13 @@ export function useVirtualTextSelection(
     releasePointerCapture(ev.pointerId)
     anchor = null
     lastValidFocus = null
+    if (!pointerMoved) {
+      lastClickAt = performance.now()
+      lastClickX = downX
+      lastClickY = downY
+    } else {
+      lastClickAt = 0
+    }
     clearNativeSelection()
   }
 

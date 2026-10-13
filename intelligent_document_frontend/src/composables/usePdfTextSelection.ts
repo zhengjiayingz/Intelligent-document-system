@@ -1,4 +1,5 @@
 import { ref, type Ref } from 'vue'
+import { wordRangeAtOffset } from '@/composables/useVirtualTextSelection'
 
 const MIN_SELECTION_LEN = 2
 const MAX_SELECTION_LEN = 8000
@@ -331,6 +332,85 @@ function joinSelectionParts(parts: SelectionPart[]): string {
   return lineTexts.join(' ')
 }
 
+type LineChar = { entry: FlatItem; offset: number }
+
+/** 同一行上的 text item 拼成字符串，双击时按词边界切，再映射回各 item */
+function wordPartsAtCaret(flat: FlatItem[], caret: TextCaret): SelectionPart[] | null {
+  const caretRect = caret.data.rects[caret.itemIdx]!
+  const line = flat.filter((entry) => {
+    if (entry.data.pageInner !== caret.data.pageInner) return false
+    const rect = entry.data.rects[entry.itemIdx]!
+    return Math.abs(rect.top - caretRect.top) <= SAME_LINE_THRESHOLD_PX
+  })
+  if (line.length === 0) return null
+
+  const maps: Array<LineChar | null> = []
+  let text = ''
+  let caretCharIndex = caret.offset
+  let prevRight = -Infinity
+  let prevHeight = 0
+  let prevEndedWithSpace = false
+
+  for (const entry of line) {
+    const item = entry.data.items[entry.itemIdx]!
+    const rect = entry.data.rects[entry.itemIdx]!
+    const gap = text.length === 0 ? 0 : rect.left - prevRight
+    const heightRef = Math.max(prevHeight, rect.height, 1)
+    const needsSpace =
+      text.length > 0 &&
+      gap > heightRef * 0.15 &&
+      !prevEndedWithSpace &&
+      !item.str.startsWith(' ')
+
+    if (needsSpace) {
+      text += ' '
+      maps.push(null)
+    }
+    if (entry.order === caret.order) {
+      caretCharIndex = text.length + Math.min(caret.offset, item.str.length)
+    }
+    for (let i = 0; i < item.str.length; i++) {
+      maps.push({ entry, offset: i })
+    }
+    text += item.str
+    prevRight = rect.right
+    prevHeight = rect.height || prevHeight
+    prevEndedWithSpace = item.str.endsWith(' ')
+  }
+
+  const bounds = wordRangeAtOffset(text, caretCharIndex)
+  if (!bounds) return null
+
+  const parts: SelectionPart[] = []
+  let current: SelectionPart | null = null
+  for (let i = bounds.start; i < bounds.end; i++) {
+    const mapped = maps[i]
+    if (!mapped) continue
+    const item = mapped.entry.data.items[mapped.entry.itemIdx]!
+    const rect = mapped.entry.data.rects[mapped.entry.itemIdx]!
+    if (
+      current &&
+      current.data === mapped.entry.data &&
+      current.itemIdx === mapped.entry.itemIdx &&
+      current.end === mapped.offset
+    ) {
+      current.end = mapped.offset + 1
+      current.rect = partialItemRect(rect, item.str, current.start, current.end)
+      continue
+    }
+    current = {
+      data: mapped.entry.data,
+      itemIdx: mapped.entry.itemIdx,
+      start: mapped.offset,
+      end: mapped.offset + 1,
+      rect: partialItemRect(rect, item.str, mapped.offset, mapped.offset + 1),
+    }
+    parts.push(current)
+  }
+
+  return parts.length > 0 ? parts : null
+}
+
 function paintSelectionHighlights(root: HTMLElement, parts: SelectionPart[]) {
   clearHighlightLayers(root)
   if (parts.length === 0) return
@@ -355,6 +435,7 @@ function paintSelectionHighlights(root: HTMLElement, parts: SelectionPart[]) {
  * PDF 划词：直接用 pdf.js getTextContent() 的原始坐标做命中测试，
  * 绕过 DOM text layer 的 scaleX 变换问题。
  * 高亮和文本都从同一个 text item 数据生成，天然一致。
+ * 双击选中光标所在单词，规则与文本预览一致。
  */
 export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefined>) {
   const selectedText = ref('')
@@ -362,6 +443,15 @@ export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefine
   let anchorPoint: ClientPoint | null = null
   let activeParts: SelectionPart[] = []
   let hasMeaningfulDrag = false
+  /** pointerdown 里 preventDefault 会让浏览器不再累计 detail，双击要自己记 */
+  const DBLCLICK_MS = 500
+  const DBLCLICK_SLOP_PX = 8
+  let lastClickAt = 0
+  let lastClickX = 0
+  let lastClickY = 0
+  let downX = 0
+  let downY = 0
+  let pointerMoved = false
 
   function getRoot(): HTMLElement | null {
     return scrollRef.value ?? null
@@ -378,7 +468,7 @@ export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefine
     if (sel && !sel.isCollapsed) sel.removeAllRanges()
   }
 
-  function applyParts(parts: SelectionPart[]): string {
+  function applyParts(parts: SelectionPart[], minLen = MIN_SELECTION_LEN): string {
     const root = getRoot()
     if (!root) return ''
 
@@ -386,7 +476,7 @@ export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefine
     paintSelectionHighlights(root, parts)
 
     const text = joinSelectionParts(parts)
-    if (!text || text.length < MIN_SELECTION_LEN) {
+    if (!text || text.length < minLen) {
       selectedText.value = ''
       return ''
     }
@@ -419,8 +509,27 @@ export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefine
     applyParts(parts)
   }
 
+  function selectWordAt(point: ClientPoint) {
+    isPointerDown = false
+    anchorPoint = null
+    hasMeaningfulDrag = false
+    const root = getRoot()
+    if (!root) return
+
+    const flat = flattenReadingOrder(collectAllTextLayers(root))
+    const caret = caretFromPoint(flat, point)
+    if (!caret) {
+      applyParts([])
+      return
+    }
+    applyParts(wordPartsAtCaret(flat, caret) ?? [], 1)
+  }
+
   function onDocumentPointerMove(ev: PointerEvent) {
     if (!isPointerDown) return
+    if (Math.hypot(ev.clientX - downX, ev.clientY - downY) > DBLCLICK_SLOP_PX) {
+      pointerMoved = true
+    }
     updateDragSelection({ x: ev.clientX, y: ev.clientY })
   }
 
@@ -430,6 +539,13 @@ export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefine
     updateDragSelection({ x: ev.clientX, y: ev.clientY })
     anchorPoint = null
     hasMeaningfulDrag = false
+    if (!pointerMoved) {
+      lastClickAt = performance.now()
+      lastClickX = downX
+      lastClickY = downY
+    } else {
+      lastClickAt = 0
+    }
   }
 
   function onPointerDown(ev: PointerEvent) {
@@ -443,6 +559,19 @@ export function usePdfTextSelection(scrollRef: Ref<HTMLElement | null | undefine
     ev.preventDefault()
     const sel = window.getSelection()
     if (sel) sel.removeAllRanges()
+
+    const now = performance.now()
+    const isDoubleClick =
+      now - lastClickAt <= DBLCLICK_MS &&
+      Math.hypot(ev.clientX - lastClickX, ev.clientY - lastClickY) <= DBLCLICK_SLOP_PX
+    pointerMoved = false
+    downX = ev.clientX
+    downY = ev.clientY
+    if (isDoubleClick) {
+      lastClickAt = 0
+      selectWordAt({ x: ev.clientX, y: ev.clientY })
+      return
+    }
 
     isPointerDown = true
     hasMeaningfulDrag = false
