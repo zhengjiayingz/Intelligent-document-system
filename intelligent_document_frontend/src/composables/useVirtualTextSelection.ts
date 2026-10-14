@@ -284,16 +284,17 @@ export function useVirtualTextSelection(
     applyStoredNoteHighlights()
   }
 
-  function measureSelectionRect(): DOMRect | null {
+  function measureSelectionRects(): DOMRect[] {
     const root = getRoot()
     const range = selectionRange.value
-    if (!root || !range) return null
+    if (!root || !range) return []
     const ranges = buildSelectionRanges(root, rowsRef.value, range)
+    const rects: DOMRect[] = []
     for (const item of ranges) {
       const rect = item.getBoundingClientRect()
-      if (rect.width > 0 || rect.height > 0) return rect
+      if (rect.width > 0 || rect.height > 0) rects.push(rect)
     }
-    return null
+    return rects
   }
 
   function renderOverlayRects(ranges: Range[]) {
@@ -698,7 +699,7 @@ export function useVirtualTextSelection(
     detachSelectionListeners,
     clearSelection,
     setNoteHighlights,
-    measureSelectionRect,
+    measureSelectionRects,
     refreshVisualHighlight: () => {
       if (selectionRange.value) applyVisualHighlight(selectionRange.value)
       applyStoredNoteHighlights()

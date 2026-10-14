@@ -148,7 +148,6 @@ const notes = ref<FileTextNote[]>([])
 const noteDraft = ref('')
 const noteCard = ref<{ mode: 'create' } | { mode: 'edit'; id: number } | null>(null)
 const popoverPos = ref<{ top: number; left: number } | null>(null)
-const popoverPoint = ref<{ x: number; y: number; scrollTop: number; scrollLeft: number } | null>(null)
 const saving = ref(false)
 let noteLoadGen = 0
 
@@ -161,7 +160,7 @@ const {
   clearSelection,
   refreshVisualHighlight,
   setNoteHighlights,
-  measureSelectionRect,
+  measureSelectionRects,
 } = useVirtualTextSelection(scrollRef, displayRows)
 
 const readyNotes = computed(() =>
@@ -195,84 +194,74 @@ const noteHighlightRanges = computed(() =>
 
 const POPOVER_MARGIN = 8
 
-function placeFixed(x: number, y: number, width: number, height: number) {
-  const maxLeft = Math.max(POPOVER_MARGIN, window.innerWidth - width - POPOVER_MARGIN)
-  const left = Math.min(Math.max(POPOVER_MARGIN, x), maxLeft)
+function rectsIntersect(a: DOMRect, b: DOMRect): boolean {
+  return a.bottom > b.top && a.top < b.bottom && a.right > b.left && a.left < b.right
+}
+
+function placeInPane(x: number, y: number, pane: DOMRect) {
+  const card = !!noteCard.value
+  const width = card ? 260 : 108
+  const height = card ? 200 : 32
+  const minLeft = pane.left + POPOVER_MARGIN
+  const maxLeft = Math.max(minLeft, pane.right - width - POPOVER_MARGIN)
+  const left = Math.min(Math.max(minLeft, x), maxLeft)
   let top = y + POPOVER_MARGIN
-  if (top + height > window.innerHeight - POPOVER_MARGIN) {
-    top = y - height - POPOVER_MARGIN
-  }
-  if (top < POPOVER_MARGIN) top = POPOVER_MARGIN
+  const minTop = pane.top + POPOVER_MARGIN
+  const maxTop = Math.max(minTop, pane.bottom - height - POPOVER_MARGIN)
+  if (top + height > pane.bottom - POPOVER_MARGIN) top = y - height - POPOVER_MARGIN
+  top = Math.min(Math.max(minTop, top), maxTop)
   return { top, left }
 }
 
-function applyAnchor(x: number, y: number) {
-  const card = !!noteCard.value
-  popoverPos.value = placeFixed(x, y, card ? 260 : 108, card ? 200 : 32)
+function selectionAnchor(pane: DOMRect): { x: number; y: number } | null {
+  for (const rect of measureSelectionRects()) {
+    if (!rectsIntersect(rect, pane)) continue
+    return {
+      x: Math.max(rect.left, pane.left),
+      y: Math.min(rect.bottom, pane.bottom),
+    }
+  }
+  return null
 }
 
-function selectionAnchor(): { x: number; y: number } | null {
-  const root = scrollRef.value
-  const rect = measureSelectionRect()
-  if (!root || !rect) return null
-  const view = root.getBoundingClientRect()
-  if (rect.bottom < view.top || rect.top > view.bottom) return null
-  return { x: rect.left, y: rect.bottom }
-}
-
-function editAnchor(): { x: number; y: number } | null {
+function editAnchor(pane: DOMRect): { x: number; y: number } | null {
   const card = noteCard.value
-  if (card?.mode !== 'edit' || !scrollRef.value) return null
+  const root = scrollRef.value
+  if (card?.mode !== 'edit' || !root) return null
   const note = notes.value.find((item) => item.id === card.id)
   if (!note) return null
-  const first = sourceRangeToRows(mappedRows.value, note.startOffset, note.endOffset)[0]
-  if (!first) return null
-  const rowEl = scrollRef.value.querySelector<HTMLElement>(`[data-index="${first.rowIndex}"]`)
-  if (!rowEl) return null
-  const rect = rowEl.getBoundingClientRect()
-  const view = scrollRef.value.getBoundingClientRect()
-  if (rect.bottom < view.top || rect.top > view.bottom) return null
-  return { x: rect.left, y: rect.top }
-}
-
-function pinPopover(x: number, y: number) {
-  popoverPoint.value = {
-    x,
-    y,
-    scrollTop: scrollRef.value?.scrollTop ?? 0,
-    scrollLeft: scrollRef.value?.scrollLeft ?? 0,
+  const spans = sourceRangeToRows(mappedRows.value, note.startOffset, note.endOffset)
+  for (const span of spans) {
+    const rowEl = root.querySelector<HTMLElement>(`[data-index="${span.rowIndex}"]`)
+    if (!rowEl) continue
+    const rect = rowEl.getBoundingClientRect()
+    if (!rectsIntersect(rect, pane)) continue
+    return {
+      x: Math.max(rect.left, pane.left),
+      y: Math.min(rect.bottom, pane.bottom),
+    }
   }
-  applyAnchor(x, y)
+  return null
 }
 
 function syncPopover() {
-  if (noteCard.value?.mode === 'edit') {
-    const pinned = popoverPoint.value
-    const root = scrollRef.value
-    if (pinned && root) {
-      applyAnchor(pinned.x - (root.scrollLeft - pinned.scrollLeft), pinned.y - (root.scrollTop - pinned.scrollTop))
-      return
-    }
-    const point = editAnchor()
-    if (point) applyAnchor(point.x, point.y)
+  const pane = scrollRef.value?.getBoundingClientRect()
+  if (!pane) {
+    popoverPos.value = null
     return
   }
-  if (noteCard.value?.mode === 'create' || selectionRange.value) {
-    const point = selectionAnchor()
-    if (point) {
-      applyAnchor(point.x, point.y)
-      return
-    }
-    if (!noteCard.value) popoverPos.value = null
-    return
-  }
-  popoverPos.value = null
+  const point =
+    noteCard.value?.mode === 'edit'
+      ? editAnchor(pane)
+      : noteCard.value?.mode === 'create' || selectionRange.value
+        ? selectionAnchor(pane)
+        : null
+  popoverPos.value = point ? placeInPane(point.x, point.y, pane) : null
 }
 
 function closeNoteCard() {
   noteCard.value = null
   noteDraft.value = ''
-  popoverPoint.value = null
   void nextTick(() => syncPopover())
 }
 
@@ -298,6 +287,7 @@ function apiMessage(error: unknown, fallback: string) {
 async function saveNote() {
   if (!noteCard.value || saving.value) return
   const card = noteCard.value
+  const gen = noteLoadGen
   saving.value = true
   try {
     if (card.mode === 'create') {
@@ -319,33 +309,39 @@ async function saveNote() {
         ...anchor,
         content: draftContent(),
       })
+      if (gen !== noteLoadGen) return
       notes.value = [...notes.value, created]
       clearSelection()
       closeNoteCard()
     } else {
       const updated = await fileApiService.updateTextNote(props.fileId, card.id, draftContent())
+      if (gen !== noteLoadGen) return
       notes.value = notes.value.map((note) => (note.id === updated.id ? updated : note))
       closeNoteCard()
     }
   } catch (error: unknown) {
+    if (gen !== noteLoadGen) return
     ElMessage.error(apiMessage(error, t('preview.textChunkError')))
   } finally {
-    saving.value = false
+    if (gen === noteLoadGen) saving.value = false
   }
 }
 
 async function deleteOpenNote() {
   if (noteCard.value?.mode !== 'edit' || saving.value) return
   const noteId = noteCard.value.id
+  const gen = noteLoadGen
   saving.value = true
   try {
     await fileApiService.deleteTextNote(props.fileId, noteId)
+    if (gen !== noteLoadGen) return
     notes.value = notes.value.filter((note) => note.id !== noteId)
     closeNoteCard()
   } catch (error: unknown) {
+    if (gen !== noteLoadGen) return
     ElMessage.error(apiMessage(error, t('preview.textChunkError')))
   } finally {
-    saving.value = false
+    if (gen === noteLoadGen) saving.value = false
   }
 }
 
@@ -376,11 +372,7 @@ watch(lastClick, (click) => {
   clearSelection()
   noteDraft.value = hit.content ?? ''
   noteCard.value = { mode: 'edit', id: hit.id }
-  pinPopover(click.x, click.y)
-})
-
-watch(reflowForReading, () => {
-  popoverPoint.value = null
+  syncPopover()
 })
 
 const virtualizer = useVirtualizer(
@@ -434,6 +426,7 @@ function scheduleRemeasure() {
 watch(virtualItems, () => {
   setNoteHighlights(noteHighlightRanges.value)
   refreshVisualHighlight()
+  syncPopover()
 }, { flush: 'post' })
 
 watch(displayRows, () => {
@@ -480,7 +473,6 @@ function reset() {
   noteCard.value = null
   noteDraft.value = ''
   popoverPos.value = null
-  popoverPoint.value = null
   saving.value = false
   window.removeEventListener('resize', onWindowResize)
   setNoteHighlights([])
