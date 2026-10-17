@@ -1,4 +1,5 @@
 import type { Readable } from 'node:stream';
+import iconv from 'iconv-lite';
 import type { StorageProvider } from '@/storage/types';
 import {
   EmptyDocxError,
@@ -14,7 +15,7 @@ import { extractTextFromImage } from '@/files/ai/index/provider/vision.provider'
 /** 格式不支持（扩展名/MIME 不匹配） */
 export class UnsupportedDocumentFormatError extends Error {
   constructor(
-    message = '不支持的文档格式，仅支持 UTF-8 的 .txt / .md、.pdf（含扫描件）、.docx 及可 OCR 的图片',
+    message = '不支持的文档格式，仅支持 UTF-8 / GBK 的 .txt / .md、.pdf（含扫描件）、.docx 及可 OCR 的图片',
   ) {
     super(message);
     this.name = 'UnsupportedDocumentFormatError';
@@ -290,11 +291,19 @@ async function readStreamToBuffer(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-function decodeUtf8(buffer: Buffer): string {
+/** 与分块预览一致：先 UTF-8，失败再试 GB18030（含常见 GBK 小说） */
+function decodePlainText(buffer: Buffer): string {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
   } catch {
-    throw new UnsupportedDocumentFormatError('文档不是有效的 UTF-8 文本');
+    const text = iconv.decode(buffer, 'gb18030');
+    const bad = (text.match(/\uFFFD/g) || []).length;
+    if (!text.trim() || bad * 2 >= text.length) {
+      throw new UnsupportedDocumentFormatError(
+        '文档不是有效的 UTF-8 / GBK 文本',
+      );
+    }
+    return text;
   }
 }
 
@@ -375,7 +384,7 @@ export async function extractPdfText(
 /**
  * 按文件类型从 Buffer 抽出可索引纯文本（索引流水线的统一入口内部实现）。
  * 路由：PDF → extractPdfText（文字层 / 扫描 OCR）；docx → 解压正文；
- * 图片 → Vision OCR；其余按 UTF-8 文本解码。格式不支持则抛 UnsupportedDocumentFormatError。
+ * 图片 → Vision OCR；其余按 UTF-8 / GBK 文本解码。格式不支持则抛 UnsupportedDocumentFormatError。
  */
 async function extractTextFromBufferInternal(
   buffer: Buffer,
@@ -405,7 +414,7 @@ async function extractTextFromBufferInternal(
     return text;
   }
 
-  return decodeUtf8(buffer);
+  return decodePlainText(buffer);
 }
 
 /** 单测与可选进度回调入口 */

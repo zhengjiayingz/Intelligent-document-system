@@ -236,6 +236,17 @@ describe('text-extractor', () => {
       expect(text).toBe('你好\nworld');
     });
 
+    it('应解码 GB18030/GBK 文本（与分块预览一致）', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const iconv = require('iconv-lite') as typeof import('iconv-lite');
+      const buf = iconv.encode('你好\nHarry Potter', 'gb18030');
+      const text = await extractTextFromBuffer(buf, {
+        fileName: 'a.txt',
+        mimeType: 'text/plain',
+      });
+      expect(text).toBe('你好\nHarry Potter');
+    });
+
     it('格式不支持时应抛 UnsupportedDocumentFormatError', async () => {
       await expect(
         extractTextFromBuffer(Buffer.from('x'), {
@@ -267,7 +278,7 @@ describe('text-extractor', () => {
       ).rejects.toThrow(/未识别到可用文字/);
     });
 
-    it('非法 UTF-8 应抛 UnsupportedDocumentFormatError', async () => {
+    it('无法识别的乱码应抛 UnsupportedDocumentFormatError', async () => {
       await expect(
         extractTextFromBuffer(Buffer.from([0xff, 0xfe, 0xfd]), {
           fileName: 'a.txt',

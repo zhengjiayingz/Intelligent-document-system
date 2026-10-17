@@ -173,6 +173,17 @@
             <span class="ai-chat-context-label">{{ t('preview.aiChatContext') }}</span>
             <p v-if="selectedText" class="ai-chat-context-text">{{ selectedPreview }}</p>
             <p v-else class="ai-chat-context-empty">{{ t('preview.aiAskSelectedEmpty') }}</p>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              class="ai-generate-notes"
+              :loading="notesSaving"
+              :disabled="notesSaving || !selectedText.trim()"
+              @click="emit('generate-notes')"
+            >
+              {{ t('preview.generateNotes') }}
+            </el-button>
           </div>
 
           <div v-if="canUseTts && ttsAudioUrl" class="ai-tts-player">
@@ -214,12 +225,13 @@
           </div>
         </div>
       </el-tab-pane>
-      <el-tab-pane :label="t('preview.aiTabSummary')" name="summary">
+      <el-tab-pane :label="t('preview.aiTabSummary')" name="summary" class="ai-scroll-pane">
         <SummaryPanel :summary-genre="summaryData?.summaryGenre ?? indexStatus?.summaryGenre ?? null"
           :payload="summaryData?.payload ?? null" :loading="summaryLoading" :error="summaryError"
           :ready="indexStatus?.status === 'ready'" />
       </el-tab-pane>
-      <el-tab-pane v-if="showKnowledgeTab" :label="t('preview.aiTabKnowledge')" name="knowledge">
+      <el-tab-pane v-if="showKnowledgeTab" :label="t('preview.aiTabKnowledge')" name="knowledge"
+        class="ai-scroll-pane">
         <KnowledgePanel :summary-genre="knowledgeData?.summaryGenre ?? indexStatus?.summaryGenre ?? null"
           :payload="knowledgeData?.payload ?? null" :loading="knowledgeLoading" :error="knowledgeError"
           :ready="indexStatus?.status === 'ready'" />
@@ -308,15 +320,19 @@ const props = withDefaults(
      * 扫描 PDF 无文字层时应为 false：禁用划词并默认全文问答。
      */
     selectionEnabled?: boolean
+    /** 正在把选区注解写成网盘 txt */
+    notesSaving?: boolean
   }>(),
   {
     enableSolveMode: false,
     selectionEnabled: true,
+    notesSaving: false,
   },
 )
 
 const emit = defineEmits<{
   (e: 'update:selectedText', v: string): void
+  (e: 'generate-notes'): void
 }>()
 
 const { t } = useI18n()
@@ -1267,6 +1283,12 @@ defineExpose({ reset, activate, startSolve })
     min-height: 0;
     overflow: hidden;
   }
+
+  /* 摘要 / 知识卡片：pane 自身滚动，避免长文被 overflow:hidden 裁切且无滚动条 */
+  :deep(.el-tab-pane.ai-scroll-pane) {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 .ai-chat-tab {
@@ -1295,6 +1317,10 @@ defineExpose({ reset, activate, startSolve })
   border-bottom: 1px solid var(--el-border-color-lighter);
   background: var(--el-fill-color-lighter, #f5f7fa);
   flex-shrink: 0;
+}
+
+.ai-generate-notes {
+  margin-top: 8px;
 }
 
 .ai-chat-context-label {

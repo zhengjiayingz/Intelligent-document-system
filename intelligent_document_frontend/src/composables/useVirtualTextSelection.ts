@@ -18,7 +18,6 @@ export type VirtualTextSelectionRange = {
 const MIN_SELECTION_LEN = 2
 const MAX_SELECTION_LEN = 8000
 const HIGHLIGHT_NAME = 'vlist-sel'
-const NOTES_HIGHLIGHT_NAME = 'vlist-notes'
 const NEAREST_ROW_MAX_GAP_PX = 80
 
 export type VirtualTextClick = {
@@ -26,6 +25,11 @@ export type VirtualTextClick = {
   offset: number
   x: number
   y: number
+}
+
+export type ColoredNoteHighlight = {
+  range: VirtualTextSelectionRange
+  color: string
 }
 
 function isWordChar(ch: string): boolean {
@@ -219,11 +223,12 @@ export function useVirtualTextSelection(
   const selectedText = ref('')
   const selectionRange = ref<VirtualTextSelectionRange | null>(null)
   const lastClick = ref<VirtualTextClick | null>(null)
-  let noteRanges: VirtualTextSelectionRange[] = []
+  let noteHighlights: ColoredNoteHighlight[] = []
   let isPointerDown = false
   let anchor: CaretPoint | null = null
   let lastValidFocus: CaretPoint | null = null
   let overlayEl: HTMLElement | null = null
+  let notesOverlayEl: HTMLElement | null = null
   /** pointerdown 里 preventDefault 会让浏览器不再累计 detail，双击要自己记 */
   const DBLCLICK_MS = 500
   const DBLCLICK_SLOP_PX = 8
@@ -256,6 +261,20 @@ export function useVirtualTextSelection(
     return overlayEl
   }
 
+  function ensureNotesOverlay(): HTMLElement | null {
+    const inner = getInnerRoot()
+    if (!inner) return null
+
+    if (!notesOverlayEl || notesOverlayEl.parentElement !== inner) {
+      notesOverlayEl?.remove()
+      notesOverlayEl = document.createElement('div')
+      notesOverlayEl.className = 'vlist-notes-overlay'
+      inner.appendChild(notesOverlayEl)
+    }
+
+    return notesOverlayEl
+  }
+
   function clearVisualHighlight() {
     if (supportsCssHighlight()) {
       CSS.highlights.delete(HIGHLIGHT_NAME)
@@ -263,24 +282,47 @@ export function useVirtualTextSelection(
     overlayEl?.replaceChildren()
   }
 
-  function applyStoredNoteHighlights() {
-    if (!supportsCssHighlight()) return
-    if (noteRanges.length === 0) {
-      CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
-      return
+  /** 覆盖层挂在 .vlist-inner 内，须相对 inner 定位；相对 scroll 容器会把 padding 算进去导致偏位 */
+  function placeOverlayRects(
+    overlay: HTMLElement,
+    ranges: Range[],
+    className: string,
+    background?: string,
+  ) {
+    const inner = getInnerRoot()
+    if (!inner) return
+    const innerRect = inner.getBoundingClientRect()
+    for (const range of ranges) {
+      for (const rect of Array.from(range.getClientRects())) {
+        if (rect.width <= 0 || rect.height <= 0) continue
+        const box = document.createElement('div')
+        box.className = className
+        box.style.top = `${rect.top - innerRect.top}px`
+        box.style.left = `${rect.left - innerRect.left}px`
+        box.style.width = `${rect.width}px`
+        box.style.height = `${rect.height}px`
+        if (background) box.style.background = background
+        overlay.appendChild(box)
+      }
     }
-    const root = getRoot()
-    if (!root) return
-    const ranges: Range[] = []
-    for (const range of noteRanges) {
-      ranges.push(...buildSelectionRanges(root, rowsRef.value, range))
-    }
-    if (ranges.length === 0) return
-    CSS.highlights.set(NOTES_HIGHLIGHT_NAME, new Highlight(...ranges))
   }
 
-  function setNoteHighlights(ranges: VirtualTextSelectionRange[]) {
-    noteRanges = ranges
+  function applyStoredNoteHighlights() {
+    const overlay = ensureNotesOverlay()
+    const scrollEl = getRoot()
+    if (!overlay || !scrollEl) return
+
+    overlay.replaceChildren()
+    if (noteHighlights.length === 0) return
+
+    for (const item of noteHighlights) {
+      const ranges = buildSelectionRanges(scrollEl, rowsRef.value, item.range)
+      placeOverlayRects(overlay, ranges, 'vlist-notes-overlay__rect', item.color)
+    }
+  }
+
+  function setNoteHighlights(items: ColoredNoteHighlight[]) {
+    noteHighlights = items
     applyStoredNoteHighlights()
   }
 
@@ -299,24 +341,10 @@ export function useVirtualTextSelection(
 
   function renderOverlayRects(ranges: Range[]) {
     const overlay = ensureOverlay()
-    const scrollEl = getRoot()
-    if (!overlay || !scrollEl) return
+    if (!overlay) return
 
     overlay.replaceChildren()
-    const scrollRect = scrollEl.getBoundingClientRect()
-
-    for (const range of ranges) {
-      for (const rect of Array.from(range.getClientRects())) {
-        if (rect.width <= 0 || rect.height <= 0) continue
-        const box = document.createElement('div')
-        box.className = 'vlist-selection-overlay__rect'
-        box.style.top = `${rect.top - scrollRect.top + scrollEl.scrollTop}px`
-        box.style.left = `${rect.left - scrollRect.left + scrollEl.scrollLeft}px`
-        box.style.width = `${rect.width}px`
-        box.style.height = `${rect.height}px`
-        overlay.appendChild(box)
-      }
-    }
+    placeOverlayRects(overlay, ranges, 'vlist-selection-overlay__rect')
   }
 
   function applyVisualHighlight(range: VirtualTextSelectionRange | null) {
@@ -687,8 +715,9 @@ export function useVirtualTextSelection(
     detachSelectionListeners()
     overlayEl?.remove()
     overlayEl = null
+    notesOverlayEl?.remove()
+    notesOverlayEl = null
     clearVisualHighlight()
-    if (supportsCssHighlight()) CSS.highlights.delete(NOTES_HIGHLIGHT_NAME)
   })
 
   return {

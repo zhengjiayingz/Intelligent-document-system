@@ -68,6 +68,11 @@ export const fileUploadOptions: MulterOptions = {
       cb(null, true);
       return;
     }
+    // 简单上传 .txt 时浏览器 MIME 是 text/plain，白名单正则只认 txt 子串
+    if (ext === '.txt' && (!file.mimetype || file.mimetype.startsWith('text/plain'))) {
+      cb(null, true);
+      return;
+    }
     cb(new Error('不支持的文件类型'), false);
   },
 };

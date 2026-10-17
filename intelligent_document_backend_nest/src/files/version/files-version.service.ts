@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   LogOperationType,
@@ -8,6 +13,8 @@ import {
   OperationLogService,
 } from '@/operation-log/operation-log.service';
 import { PrismaService } from '@/prisma/prisma.service';
+import { StorageService } from '@/storage/storage.service';
+import { calculateFileHash } from '../utils/file.utils';
 import { resolveStorageFilePath } from '../utils/storagePath.utils';
 
 @Injectable()
@@ -15,7 +22,146 @@ export class FilesVersionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly operationLogService: OperationLogService,
+    private readonly storageService: StorageService,
   ) {}
+
+  async replaceTextContent(
+    req: Request,
+    userId: number,
+    fileId: number,
+    contentRaw: unknown,
+  ) {
+    if (typeof contentRaw !== 'string') {
+      throw new BadRequestException('正文不能为空');
+    }
+    const content = contentRaw;
+    const bytes = Buffer.from(content, 'utf8');
+    const maxBytes = parseInt(process.env.MAX_FILE_SIZE || '10485760', 10);
+    if (bytes.length > maxBytes) {
+      throw new BadRequestException('文件过大');
+    }
+
+    const userFile = await this.prisma.userFile.findFirst({
+      where: { id: fileId, userId, isDeleted: false, fileType: 'file' },
+      include: { storage: true },
+    });
+    if (!userFile) {
+      throw new NotFoundException('文件不存在或无权访问');
+    }
+    const name = userFile.fileName.toLowerCase();
+    const mime = userFile.storage?.mimeType ?? '';
+    if (!name.endsWith('.txt') && !mime.startsWith('text/plain')) {
+      throw new BadRequestException('只能修改文本文件');
+    }
+
+    const tmpPath = path.join(
+      os.tmpdir(),
+      `text-edit-${userId}-${fileId}-${Date.now()}.txt`,
+    );
+    fs.writeFileSync(tmpPath, bytes);
+    const fileHash = calculateFileHash(tmpPath);
+
+    if (userFile.storage?.fileHash === fileHash) {
+      fs.rmSync(tmpPath, { force: true });
+      return {
+        success: true,
+        message: '内容未变化',
+        data: { id: userFile.id, version: userFile.version, unchanged: true },
+      };
+    }
+
+    let storedPath: string | null = null;
+    const existingStorage = await this.prisma.fileStorage.findUnique({
+      where: { fileHash },
+    });
+    if (existingStorage) {
+      fs.rmSync(tmpPath, { force: true });
+    } else {
+      const storage = this.storageService.getStorageProvider();
+      storedPath = await storage.putFromLocalFile({
+        localFilePath: tmpPath,
+        suggestedName: `${fileHash}-${userFile.fileName}`,
+      });
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      let fileStorage = await tx.fileStorage.findUnique({
+        where: { fileHash },
+      });
+      if (!fileStorage) {
+        if (!storedPath) {
+          throw new Error('TEXT_STORE_MISSING');
+        }
+        fileStorage = await tx.fileStorage.create({
+          data: {
+            fileHash,
+            filePath: storedPath,
+            fileSize: BigInt(bytes.length),
+            mimeType: 'text/plain',
+            referenceCount: 1,
+            status: 'active',
+          },
+        });
+      } else {
+        fileStorage = await tx.fileStorage.update({
+          where: { id: fileStorage.id },
+          data: { referenceCount: { increment: 1 } },
+        });
+      }
+
+      if (userFile.storageId && userFile.storage) {
+        await tx.fileHistory.create({
+          data: {
+            userFileId: userFile.id,
+            storageId: userFile.storageId,
+            fileName: userFile.fileName,
+            version: userFile.version,
+            fileSize: userFile.storage.fileSize,
+          },
+        });
+      }
+
+      const updated = await tx.userFile.update({
+        where: { id: userFile.id },
+        data: {
+          storageId: fileStorage.id,
+          version: { increment: 1 },
+        },
+      });
+
+      const oldSize = userFile.storage?.fileSize ?? 0n;
+      const delta = BigInt(bytes.length) - oldSize;
+      if (delta !== 0n) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { storageUsed: { increment: delta } },
+        });
+      }
+
+      return updated;
+    });
+
+    await this.operationLogService.logOperation({
+      req,
+      userId,
+      operationType: LogOperationType.UPDATE,
+      resourceType: LogResourceType.FILE,
+      resourceId: result.id,
+      description: `Updated text content: ${userFile.fileName}`,
+    });
+
+    return {
+      success: true,
+      message: '已保存',
+      data: {
+        id: result.id,
+        fileName: userFile.fileName,
+        version: result.version,
+        fileSize: bytes.length,
+        unchanged: false,
+      },
+    };
+  }
 
   async getFileVersions(userId: number, fileId: number) {
     const userFile = await this.prisma.userFile.findFirst({

@@ -174,7 +174,17 @@ export class FilesAiIndexService {
       if (!keepChunks) {
         await tx.documentChunk.deleteMany({ where: { userFileId: fileId } });
       }
-      await tx.documentSummary.deleteMany({ where: { userFileId: fileId } });
+      // 从摘要续建：保留已生成的 chunk 摘要（Map 可跳过），只清 chapter/book 与知识卡片
+      if (keepChunks && resumeFrom === 'summarizing') {
+        await tx.documentSummary.deleteMany({
+          where: {
+            userFileId: fileId,
+            type: { in: ['chapter', 'book'] },
+          },
+        });
+      } else {
+        await tx.documentSummary.deleteMany({ where: { userFileId: fileId } });
+      }
       await tx.documentKnowledge.deleteMany({ where: { userFileId: fileId } });
       await tx.documentIndexJob.upsert({
         where: { userFileId: fileId },

@@ -8,6 +8,7 @@ export type MappedRow = {
   endSource: number
 }
 
+/** 无换行超长行切段，避免单行 DOM 仍过高 */
 const VIRTUAL_MAX_LINE = 4000
 
 export function normalizeNewlines(text: string): string {
@@ -115,6 +116,9 @@ function collapseBlock(segs: { ch: string; source: number }[]): { ch: string; so
   return joined.slice(start, end)
 }
 
+/**
+ * 将常见 txt 中「为纸宽折行」的段内单换行合并，段落仍以空行分隔；合并在宽屏上由 pre-wrap 按容器宽度重排
+ */
 function mapReflow(normalized: string): MappedRow[] {
   if (!normalized.trim()) return []
   const paragraphs: MappedRow[] = []

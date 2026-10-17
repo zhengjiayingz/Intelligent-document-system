@@ -34,6 +34,7 @@ export class FilesTextNoteController {
       endOffset?: number;
       quote?: string;
       content?: string | null;
+      color?: string | null;
     },
   ) {
     return this.notes.create(user.id, fileId, {
@@ -41,6 +42,7 @@ export class FilesTextNoteController {
       endOffset: body.endOffset ?? -1,
       quote: body.quote ?? '',
       content: body.content,
+      color: body.color,
     });
   }
 
@@ -49,9 +51,9 @@ export class FilesTextNoteController {
     @CurrentUser() user: RequestUser,
     @Param('id', ParseIntPipe) fileId: number,
     @Param('noteId', ParseIntPipe) noteId: number,
-    @Body() body: { content?: unknown },
+    @Body() body: { content?: unknown; color?: unknown },
   ) {
-    return this.notes.updateContent(user.id, fileId, noteId, body.content);
+    return this.notes.updateNote(user.id, fileId, noteId, body);
   }
 
   @Delete(':id/text-notes/:noteId')

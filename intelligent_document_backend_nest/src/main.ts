@@ -34,16 +34,13 @@ async function bootstrap() {
   const corsOrigin = config.get<string>('CORS_ORIGIN', 'http://localhost:5173');
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || /^http:\/\/localhost:\d+$/.test(origin)) {
+      if (!origin) {
         callback(null, true);
-      } else if (
-        typeof origin === 'string' &&
-        origin.startsWith('chrome-extension://')
-      ) {
+      } else if (origin.startsWith('chrome-extension://')) {
         // MV3 扩展 Side Panel / fetch（阶段 C）
         callback(null, true);
-      } else if (corsOrigin) {
-        callback(null, origin === corsOrigin);
+      } else if (corsOrigin && origin === corsOrigin) {
+        callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'), false);
       }

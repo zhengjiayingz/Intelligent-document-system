@@ -1,0 +1,6 @@
+﻿Line one of the sample book.
+Line two continues the paragraph for reflow testing.
+Line three is another soft-wrapped line.
+
+Second paragraph starts here after a blank line.
+More text so we can scroll a bit in the preview dialog.

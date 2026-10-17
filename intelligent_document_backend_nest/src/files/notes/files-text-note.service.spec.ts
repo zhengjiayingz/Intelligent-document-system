@@ -30,7 +30,7 @@ describe('FilesTextNoteService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('空正文保存为 null', async () => {
+  it('空正文保存为 null，颜色缺省为默认淡黄', async () => {
     prisma.userFile.findFirst.mockResolvedValue({ id: 9 });
     prisma.fileTextNote.create.mockResolvedValue({ id: 4, content: null });
     await service.create(1, 9, {
@@ -47,14 +47,37 @@ describe('FilesTextNoteService', () => {
         endOffset: 5,
         quote: 'hello',
         content: null,
+        color: '#FFD666',
       },
     });
   });
 
+  it('非法颜色时 400', async () => {
+    prisma.userFile.findFirst.mockResolvedValue({ id: 9 });
+    await expect(
+      service.create(1, 9, {
+        startOffset: 0,
+        endOffset: 5,
+        quote: 'hello',
+        color: 'red',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('只能改自己的注释正文', async () => {
     prisma.fileTextNote.findFirst.mockResolvedValue(null);
-    await expect(service.updateContent(1, 9, 4, 'note')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      service.updateNote(1, 9, 4, { content: 'note' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('可同时改正文与颜色', async () => {
+    prisma.fileTextNote.findFirst.mockResolvedValue({ id: 4 });
+    prisma.fileTextNote.update.mockResolvedValue({ id: 4 });
+    await service.updateNote(1, 9, 4, { content: 'x', color: '#a8e6a1' });
+    expect(prisma.fileTextNote.update).toHaveBeenCalledWith({
+      where: { id: 4 },
+      data: { content: 'x', color: '#A8E6A1' },
+    });
   });
 });

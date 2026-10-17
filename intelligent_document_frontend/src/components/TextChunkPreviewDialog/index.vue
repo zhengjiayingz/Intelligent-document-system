@@ -1,6 +1,6 @@
 <template>
   <el-dialog v-model="visible" :title="dialogTitle" class="text-chunk-preview-dialog" width="min(96vw, 1280px)"
-    top="3vh" destroy-on-close @open="onOpen" @opened="onDialogOpened" @closed="reset">
+    top="3vh" destroy-on-close @open="onOpen" @opened="onDialogOpened" @close="onClose" @closed="onClosed">
     <div class="preview-split">
       <section class="preview-split__left">
         <p class="hint-line">{{ t('preview.textChunkBytesHint') }}</p>
@@ -13,11 +13,56 @@
           }}
         </p>
         <div class="text-chunk-options">
-          <el-checkbox v-model="reflowForReading" :disabled="initialLoading">
+          <el-checkbox v-model="reflowForReading" :disabled="initialLoading || editingText" @change="onReflowChange">
             {{ t('preview.textChunkReflow') }}
           </el-checkbox>
+          <el-button
+            v-if="!editingText"
+            size="small"
+            :disabled="initialLoading || !done"
+            :title="done ? '' : t('preview.textChunkEditNeedFull')"
+            @click="startTextEdit"
+          >
+            {{ t('preview.textChunkEdit') }}
+          </el-button>
+          <template v-else>
+            <el-button size="small" :disabled="textSaving" @click="cancelTextEdit">
+              {{ t('preview.textChunkEditCancel') }}
+            </el-button>
+            <el-button size="small" type="primary" :loading="textSaving" @click="saveTextEdit">
+              {{ t('preview.textChunkEditSave') }}
+            </el-button>
+          </template>
         </div>
-        <div ref="scrollRef" v-loading="initialLoading" class="text-chunk-scroll" @scroll.passive="onScroll">
+        <div v-if="findOpen" class="text-chunk-find" @keydown.stop>
+          <el-input
+            ref="findInputRef"
+            v-model="findQuery"
+            size="small"
+            clearable
+            class="text-chunk-find__input"
+            :placeholder="t('preview.textChunkFindPlaceholder')"
+            @keydown.enter.exact.prevent="() => void findNext()"
+            @keydown.enter.shift.prevent="() => void findPrev()"
+          />
+          <span class="text-chunk-find__status" aria-live="polite">{{ findStatusText }}</span>
+          <el-button size="small" :disabled="findBusy || initialLoading" @click="() => void findPrev()">
+            {{ t('preview.textChunkFindPrev') }}
+          </el-button>
+          <el-button size="small" type="primary" :disabled="findBusy || initialLoading" @click="() => void findNext()">
+            {{ t('preview.textChunkFindNext') }}
+          </el-button>
+          <el-button size="small" text :aria-label="t('preview.textChunkFindClose')" @click="closeFindBar">
+            ×
+          </el-button>
+        </div>
+        <textarea
+          v-if="editingText"
+          v-model="editDraft"
+          class="text-chunk-editor"
+          spellcheck="false"
+        />
+        <div v-else ref="scrollRef" v-loading="initialLoading" class="text-chunk-scroll" @scroll.passive="onScroll">
           <div v-if="!initialLoading" class="vlist-inner" :style="{
             height: `${vTotalSize}px`,
             position: 'relative',
@@ -54,6 +99,24 @@
           </el-button>
           <div v-else-if="noteCard" class="text-note-card">
             <p v-if="openNoteStale" class="text-note-stale">{{ t('preview.textNoteStale') }}</p>
+            <div class="text-note-colors" :aria-label="t('preview.textNoteColor')">
+              <button
+                v-for="preset in NOTE_COLOR_PRESETS"
+                :key="preset"
+                type="button"
+                class="text-note-colors__swatch"
+                :class="{ 'text-note-colors__swatch--active': noteColor === preset }"
+                :style="{ background: preset }"
+                :title="preset"
+                @click="noteColor = preset"
+              />
+              <el-color-picker
+                :model-value="noteColor"
+                color-format="hex"
+                size="small"
+                @update:model-value="onPickCustomColor"
+              />
+            </div>
             <el-input v-model="noteDraft" type="textarea" :rows="3" maxlength="2000"
               :placeholder="t('preview.textNotePlaceholder')" />
             <div class="text-note-card__actions">
@@ -74,7 +137,7 @@
 
       <section class="preview-split__right">
         <DocumentAiPanel ref="aiPanelRef" :file-id="fileId" :file-name="fileName"
-          v-model:selected-text="selectedText" />
+          v-model:selected-text="selectedText" :notes-saving="notesSaving" @generate-notes="onGenerateNotes" />
       </section>
     </div>
   </el-dialog>
@@ -84,7 +147,7 @@
 import { ref, computed, watch, nextTick, onUnmounted, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import fileApiService, { type FileTextNote } from '@api/file'
 import DocumentAiPanel from '@components/DocumentAiPanel/index.vue'
 import {
@@ -100,6 +163,42 @@ import {
   pickNoteAtCaret,
   sourceRangeToRows,
 } from '@/utils/textNoteAnchor'
+import {
+  defaultNoteFileName,
+  formatNoteExcerpt,
+  normalizeNoteFileName,
+  withBlankLineAfterEachLine,
+} from '@/utils/textChunkNoteExcerpt'
+import {
+  DEFAULT_NOTE_COLOR,
+  NOTE_COLOR_PRESETS,
+  normalizeNoteColor,
+  noteColorToOverlay,
+} from '@/utils/textNoteColors'
+import {
+  loadTextChunkProgress,
+  rowIndexForSourceOffset,
+  saveTextChunkProgress,
+} from '@/utils/textChunkReadingProgress'
+import {
+  loadTextChunkReflow,
+  saveTextChunkReflow,
+} from '@/utils/textChunkReflowPreference'
+import {
+  applyScrollPreference,
+  loadTextChunkScroll,
+  saveTextChunkScroll,
+  scrollMetricsFromElement,
+  type TextChunkScrollPreference,
+} from '@/utils/textChunkScrollPreference'
+import {
+  findContiguousMatches,
+  normalizeFindQuery,
+  type TextChunkFindMatch,
+} from '@/utils/textChunkFind'
+import { useAuthStore } from '@stores/auth'
+
+const FIND_HIGHLIGHT_COLOR = 'rgba(255, 213, 0, 0.55)'
 
 const CHUNK_BYTES = 256 * 1024
 
@@ -111,9 +210,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
+  (e: 'notes-saved'): void
 }>()
 
 const { t } = useI18n()
+const authStore = useAuthStore()
 
 const visible = computed({
   get: () => props.modelValue,
@@ -146,10 +247,49 @@ const fileEncoding = ref<'utf-8' | 'gb18030' | undefined>(undefined)
 const aiPanelRef = ref<InstanceType<typeof DocumentAiPanel> | null>(null)
 const notes = ref<FileTextNote[]>([])
 const noteDraft = ref('')
+const noteColor = ref(DEFAULT_NOTE_COLOR)
 const noteCard = ref<{ mode: 'create' } | { mode: 'edit'; id: number } | null>(null)
 const popoverPos = ref<{ top: number; left: number } | null>(null)
 const saving = ref(false)
+const notesSaving = ref(false)
+const editingText = ref(false)
+const editDraft = ref('')
+const textSaving = ref(false)
 let noteLoadGen = 0
+let restoringProgress = false
+/** 关闭/重置时避免把默认 reflow / 滚动写回 localStorage */
+let suppressProgressSave = false
+let progressSaveTimer: ReturnType<typeof setTimeout> | null = null
+/** destroy-on-close 后 DOM 已拆，关闭时用这份内存快照落盘 */
+let latestSourceOffset = 0
+let latestScroll: TextChunkScrollPreference = { scrollTop: 0, scrollRatio: 0 }
+
+function currentUserId(): number | null {
+  const id = Number(authStore.user?.id)
+  if (Number.isFinite(id) && id > 0) return id
+  try {
+    const raw = localStorage.getItem('user')
+    if (!raw) return null
+    const fromStorage = Number((JSON.parse(raw) as { id?: unknown })?.id)
+    return Number.isFinite(fromStorage) && fromStorage > 0 ? fromStorage : null
+  } catch {
+    return null
+  }
+}
+
+function persistReflowPreference(reflow: boolean) {
+  if (!(props.fileId > 0)) return
+  saveTextChunkReflow(props.fileId, reflow, currentUserId())
+}
+
+function persistScrollPreference(scroll: TextChunkScrollPreference) {
+  if (!(props.fileId > 0)) return
+  saveTextChunkScroll(props.fileId, scroll, currentUserId())
+}
+
+function onReflowChange(value: string | number | boolean) {
+  persistReflowPreference(value === true)
+}
 
 const {
   selectedText,
@@ -175,7 +315,10 @@ const openNoteStale = computed(() => {
   return noteStatus(normalizedText.value, note, done.value) === 'stale'
 })
 
-function highlightRangesForNote(startOffset: number, endOffset: number): VirtualTextSelectionRange[] {
+function highlightRangesForNote(
+  startOffset: number,
+  endOffset: number,
+): VirtualTextSelectionRange[] {
   const spans = sourceRangeToRows(mappedRows.value, startOffset, endOffset)
   if (spans.length === 0) return []
   const first = spans[0]!
@@ -189,8 +332,50 @@ function highlightRangesForNote(startOffset: number, endOffset: number): Virtual
 }
 
 const noteHighlightRanges = computed(() =>
-  readyNotes.value.flatMap((note) => highlightRangesForNote(note.startOffset, note.endOffset)),
+  readyNotes.value.flatMap((note) => {
+    const color = noteColorToOverlay(note.color)
+    return highlightRangesForNote(note.startOffset, note.endOffset).map((range) => ({
+      range,
+      color,
+    }))
+  }),
 )
+
+const FIND_QUERY_DEBOUNCE_MS = 200
+const findOpen = ref(false)
+const findQuery = ref('')
+const findMatches = ref<TextChunkFindMatch[]>([])
+const findIndex = ref(-1)
+const findBusy = ref(false)
+const findInputRef = ref<{ focus: () => void } | null>(null)
+let findQueryTimer: ReturnType<typeof setTimeout> | null = null
+
+const findHighlightRanges = computed(() => {
+  if (!findOpen.value || findIndex.value < 0) return []
+  const match = findMatches.value[findIndex.value]
+  if (!match) return []
+  return highlightRangesForNote(match.start, match.end).map((range) => ({
+    range,
+    color: FIND_HIGHLIGHT_COLOR,
+  }))
+})
+
+const allHighlightRanges = computed(() => [
+  ...noteHighlightRanges.value,
+  ...findHighlightRanges.value,
+])
+
+const findStatusText = computed(() => {
+  if (findBusy.value) return t('preview.textChunkFindLoading')
+  if (!normalizeFindQuery(findQuery.value)) return ''
+  if (findMatches.value.length === 0) return t('preview.textChunkFindNone')
+  const current = Math.max(1, findIndex.value + 1)
+  const total = findMatches.value.length
+  if (!done.value) {
+    return t('preview.textChunkFindStatusMore', { current, total })
+  }
+  return t('preview.textChunkFindStatus', { current, total })
+})
 
 const POPOVER_MARGIN = 8
 
@@ -201,7 +386,7 @@ function rectsIntersect(a: DOMRect, b: DOMRect): boolean {
 function placeInPane(x: number, y: number, pane: DOMRect) {
   const card = !!noteCard.value
   const width = card ? 260 : 108
-  const height = card ? 200 : 32
+  const height = card ? 248 : 32
   const minLeft = pane.left + POPOVER_MARGIN
   const maxLeft = Math.max(minLeft, pane.right - width - POPOVER_MARGIN)
   const left = Math.min(Math.max(minLeft, x), maxLeft)
@@ -262,14 +447,20 @@ function syncPopover() {
 function closeNoteCard() {
   noteCard.value = null
   noteDraft.value = ''
+  noteColor.value = DEFAULT_NOTE_COLOR
   void nextTick(() => syncPopover())
 }
 
 function openCreateCard() {
   if (!selectionRange.value) return
   noteDraft.value = ''
+  noteColor.value = DEFAULT_NOTE_COLOR
   noteCard.value = { mode: 'create' }
   syncPopover()
+}
+
+function onPickCustomColor(value: string | null) {
+  noteColor.value = normalizeNoteColor(value)
 }
 
 function draftContent(): string | null {
@@ -308,13 +499,17 @@ async function saveNote() {
       const created = await fileApiService.createTextNote(props.fileId, {
         ...anchor,
         content: draftContent(),
+        color: normalizeNoteColor(noteColor.value),
       })
       if (gen !== noteLoadGen) return
       notes.value = [...notes.value, created]
       clearSelection()
       closeNoteCard()
     } else {
-      const updated = await fileApiService.updateTextNote(props.fileId, card.id, draftContent())
+      const updated = await fileApiService.updateTextNote(props.fileId, card.id, {
+        content: draftContent(),
+        color: normalizeNoteColor(noteColor.value),
+      })
       if (gen !== noteLoadGen) return
       notes.value = notes.value.map((note) => (note.id === updated.id ? updated : note))
       closeNoteCard()
@@ -345,7 +540,7 @@ async function deleteOpenNote() {
   }
 }
 
-watch(noteHighlightRanges, (ranges) => {
+watch(allHighlightRanges, (ranges) => {
   setNoteHighlights(ranges)
 }, { flush: 'post' })
 
@@ -371,6 +566,7 @@ watch(lastClick, (click) => {
   }
   clearSelection()
   noteDraft.value = hit.content ?? ''
+  noteColor.value = normalizeNoteColor(hit.color)
   noteCard.value = { mode: 'edit', id: hit.id }
   syncPopover()
 })
@@ -379,10 +575,24 @@ const virtualizer = useVirtualizer(
   computed(() => ({
     count: displayRows.value.length,
     getScrollElement: () => scrollRef.value,
-    estimateSize: () => 25,
-    overscan: 12
+    // 与 .vlist-row 实测行高接近，减少 measure 后总高暴涨导致的跳底
+    estimateSize: (index: number) => (displayRows.value[index]?.isBlank ? 14 : 46),
+    overscan: 12,
+    // destroy-on-close 只拆 DOM，composables 状态还在；必须显式从 0 起，否则会沿用上次的 scrollOffset 直接跳到底
+    initialOffset: 0,
   }))
 )
+
+/** 把虚拟列表内部偏移和 DOM scrollTop 都拉回顶部（跨次打开时必需） */
+function resetVirtualScroll() {
+  const el = scrollRef.value
+  if (el) el.scrollTop = 0
+  try {
+    virtualizer.value.scrollToOffset(0)
+  } catch {
+    /* virtualizer 尚未就绪时忽略 */
+  }
+}
 
 const virtualItems = computed(() => virtualizer.value.getVirtualItems())
 const vTotalSize = computed(() => virtualizer.value.getTotalSize())
@@ -424,7 +634,7 @@ function scheduleRemeasure() {
 }
 
 watch(virtualItems, () => {
-  setNoteHighlights(noteHighlightRanges.value)
+  setNoteHighlights(allHighlightRanges.value)
   refreshVisualHighlight()
   syncPopover()
 }, { flush: 'post' })
@@ -438,10 +648,17 @@ function onWindowResize() {
   syncPopover()
 }
 
+function onPageHide() {
+  captureReadingProgress()
+  flushReadingProgress()
+}
+
 function onDialogOpened() {
   attachScrollSizeObserver()
   attachSelectionListeners()
   window.addEventListener('resize', onWindowResize)
+  window.addEventListener('keydown', onFindKeydown, true)
+  window.addEventListener('pagehide', onPageHide)
   scheduleRemeasure()
   setTimeout(() => virtualizer.value.measure(), 100)
 }
@@ -449,18 +666,89 @@ function onDialogOpened() {
 onUnmounted(() => {
   resizeUnsub?.()
   window.removeEventListener('resize', onWindowResize)
+  window.removeEventListener('keydown', onFindKeydown, true)
+  window.removeEventListener('pagehide', onPageHide)
   detachSelectionListeners()
+  if (progressSaveTimer != null) {
+    clearTimeout(progressSaveTimer)
+    progressSaveTimer = null
+  }
+  if (findQueryTimer != null) {
+    clearTimeout(findQueryTimer)
+    findQueryTimer = null
+  }
 })
+
+function sourceOffsetAtViewport(): number {
+  const el = scrollRef.value
+  const rows = mappedRows.value
+  if (!el || rows.length === 0) return latestSourceOffset
+
+  const items = virtualizer.value.getVirtualItems()
+  if (items.length === 0) {
+    // 虚拟列表尚未量好时，用 scrollTop / 总高粗估行号
+    const total = virtualizer.value.getTotalSize() || el.scrollHeight
+    if (total <= 0) return latestSourceOffset
+    const ratio = Math.min(1, Math.max(0, el.scrollTop / total))
+    const index = Math.min(rows.length - 1, Math.floor(ratio * rows.length))
+    const row = rows[index]
+    return row ? caretToSource(row, 0) : latestSourceOffset
+  }
+
+  let index = items[0]!.index
+  for (const item of items) {
+    if (item.start <= el.scrollTop) index = item.index
+    else break
+  }
+  const row = rows[index]
+  if (!row) return latestSourceOffset
+  return caretToSource(row, 0)
+}
+
+function captureReadingProgress() {
+  const el = scrollRef.value
+  if (!el || mappedRows.value.length === 0) return
+  latestSourceOffset = sourceOffsetAtViewport()
+  latestScroll = scrollMetricsFromElement(el)
+}
+
+function flushReadingProgress() {
+  if (suppressProgressSave || restoringProgress) return
+  const uid = currentUserId()
+  if (uid == null || !(props.fileId > 0)) return
+  // 关闭时不要再读 DOM：动画/销毁常把 scrollTop 清成 0，会冲掉滚动时记下的位置
+  saveTextChunkProgress(uid, props.fileId, {
+    reflow: reflowForReading.value,
+    sourceOffset: latestSourceOffset,
+  })
+  persistScrollPreference(latestScroll)
+  persistReflowPreference(reflowForReading.value)
+}
+
+function scheduleReadingProgressSave() {
+  if (suppressProgressSave || restoringProgress || initialLoading.value) return
+  captureReadingProgress()
+  if (progressSaveTimer != null) return
+  progressSaveTimer = setTimeout(() => {
+    progressSaveTimer = null
+    flushReadingProgress()
+  }, 400)
+}
 
 function reset() {
   noteLoadGen += 1
+  restoringProgress = false
+  if (progressSaveTimer != null) {
+    clearTimeout(progressSaveTimer)
+    progressSaveTimer = null
+  }
   aiPanelRef.value?.reset()
   detachSelectionListeners()
   clearSelection()
   resizeUnsub?.()
   resizeUnsub = null
   rawText.value = ''
-  reflowForReading.value = true
+  // 不在这里把 reflow 重置为 true：reset 后 watch 异步触发会冲掉刚写入的「取消重排」
   nextOffset.value = 0
   totalSize.value = 0
   done.value = false
@@ -472,10 +760,38 @@ function reset() {
   notes.value = []
   noteCard.value = null
   noteDraft.value = ''
+  noteColor.value = DEFAULT_NOTE_COLOR
   popoverPos.value = null
   saving.value = false
+  editingText.value = false
+  editDraft.value = ''
+  textSaving.value = false
+  resetFindState()
   window.removeEventListener('resize', onWindowResize)
+  window.removeEventListener('keydown', onFindKeydown, true)
+  window.removeEventListener('pagehide', onPageHide)
   setNoteHighlights([])
+}
+
+/** 关闭动画开始时正文还在，先落盘；@closed 时 destroy-on-close 已拆 DOM */
+function onClose() {
+  if (progressSaveTimer != null) {
+    clearTimeout(progressSaveTimer)
+    progressSaveTimer = null
+  }
+  restoringProgress = false
+  persistReflowPreference(reflowForReading.value)
+  flushReadingProgress()
+}
+
+function onClosed() {
+  suppressProgressSave = true
+  resetVirtualScroll()
+  reset()
+  // watch 默认异步调度，须等一拍再放开，否则会把默认 true 写回 localStorage
+  void nextTick(() => {
+    suppressProgressSave = false
+  })
 }
 
 async function fetchChunk(fromOffset: number) {
@@ -487,9 +803,82 @@ async function fetchChunk(fromOffset: number) {
   )
 }
 
+async function waitFrames(n = 1) {
+  for (let i = 0; i < n; i++) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  }
+}
+
+async function restoreScrollPosition(
+  gen: number,
+  sourceOffset: number,
+  scrollPref: TextChunkScrollPreference | null,
+) {
+  const hasScroll = !!scrollPref && (scrollPref.scrollTop > 0 || scrollPref.scrollRatio > 0)
+  if (gen !== noteLoadGen || (sourceOffset <= 0 && !hasScroll)) {
+    restoringProgress = false
+    return
+  }
+  await nextTick()
+  virtualizer.value.measure()
+  await nextTick()
+  if (gen !== noteLoadGen) return
+
+  const applyTarget = () => {
+    if (gen !== noteLoadGen) return
+    virtualizer.value.measure()
+    // 按退出时视口顶部的原文偏移定位。滚动比例只对「当时已加载的高度」有效，长文档重开时加载量不同，比例会把人带到开头附近
+    if (sourceOffset > 0) {
+      const rowIndex = rowIndexForSourceOffset(mappedRows.value, sourceOffset)
+      virtualizer.value.scrollToIndex(rowIndex, { align: 'start' })
+    } else if (hasScroll && scrollRef.value) {
+      const total = virtualizer.value.getTotalSize()
+      if (total > 0) {
+        virtualizer.value.scrollToOffset(Math.round(scrollPref!.scrollRatio * total))
+      }
+      applyScrollPreference(scrollRef.value, scrollPref!)
+    }
+  }
+
+  for (let i = 0; i < 5; i++) {
+    applyTarget()
+    await waitFrames(1)
+  }
+  // 对话框打开动画 / ResizeObserver 量测还会再抖，延迟再钉一次
+  await new Promise<void>((resolve) => setTimeout(resolve, 120))
+  applyTarget()
+  await waitFrames(2)
+
+  if (gen !== noteLoadGen) return
+  if (hasScroll && scrollPref) latestScroll = { ...scrollPref }
+  if (sourceOffset > 0) latestSourceOffset = sourceOffset
+  else if (scrollRef.value) latestSourceOffset = sourceOffsetAtViewport()
+  restoringProgress = false
+  refreshVisualHighlight()
+  syncPopover()
+}
+
 async function onOpen() {
+  suppressProgressSave = true
   reset()
   const gen = noteLoadGen
+  const uid = currentUserId()
+  const savedReflow = loadTextChunkReflow(props.fileId, uid)
+  reflowForReading.value = savedReflow ?? true
+  void nextTick(() => {
+    suppressProgressSave = false
+  })
+  const saved = uid != null ? loadTextChunkProgress(uid, props.fileId) : null
+  const savedScroll = loadTextChunkScroll(props.fileId, uid)
+  latestSourceOffset = saved?.sourceOffset ?? 0
+  latestScroll = savedScroll ?? { scrollTop: 0, scrollRatio: 0 }
+  if (
+    (saved && saved.sourceOffset > 0) ||
+    (savedScroll && (savedScroll.scrollTop > 0 || savedScroll.scrollRatio > 0))
+  ) {
+    restoringProgress = true
+  }
+
   initialLoading.value = true
   loadError.value = ''
   aiPanelRef.value?.activate()
@@ -499,24 +888,60 @@ async function onOpen() {
   })
   try {
     const data = await fetchChunk(0)
+    if (gen !== noteLoadGen) {
+      restoringProgress = false
+      return
+    }
     if (data.fileEncoding) fileEncoding.value = data.fileEncoding
     rawText.value += data.text
     nextOffset.value = data.nextOffset
     totalSize.value = data.totalSize
     done.value = data.done
+
+    const target = saved?.sourceOffset ?? 0
+    while (
+      gen === noteLoadGen &&
+      !done.value &&
+      target > 0 &&
+      normalizeNewlines(rawText.value).length <= target
+    ) {
+      const more = await fetchChunk(nextOffset.value)
+      if (gen !== noteLoadGen) {
+        restoringProgress = false
+        return
+      }
+      if (more.fileEncoding) fileEncoding.value = more.fileEncoding
+      rawText.value += more.text
+      nextOffset.value = more.nextOffset
+      if (more.totalSize) totalSize.value = more.totalSize
+      done.value = more.done
+    }
   } catch (e: unknown) {
     const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message
     loadError.value = msg || t('preview.textChunkError')
+    restoringProgress = false
   } finally {
-    initialLoading.value = false
+    if (gen === noteLoadGen) initialLoading.value = false
     await nextTick()
     scheduleRemeasure()
   }
   const listed = await notesPromise
-  if (gen !== noteLoadGen) return
+  if (gen !== noteLoadGen) {
+    restoringProgress = false
+    return
+  }
   notes.value = listed
   await nextTick()
+  // 正文挂载后先清掉上次会话残留的虚拟滚动偏移，再恢复进度
+  resetVirtualScroll()
+  await waitFrames(1)
   refreshVisualHighlight()
+
+  if (gen === noteLoadGen && restoringProgress) {
+    await restoreScrollPosition(gen, saved?.sourceOffset ?? 0, savedScroll)
+  } else {
+    restoringProgress = false
+  }
 }
 
 async function loadNext() {
@@ -546,22 +971,281 @@ const SCROLL_LOAD_THRESHOLD = 200
 
 function onScroll() {
   syncPopover()
+  scheduleReadingProgressSave()
   const el = scrollRef.value
-  if (!el || done.value || loadingMore.value || initialLoading.value) return
+  // 恢复进度时禁止触底续载：短内容上按比例滚动会贴近底部，续载会把位置拖到底
+  if (!el || done.value || loadingMore.value || initialLoading.value || restoringProgress) return
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_LOAD_THRESHOLD) {
     void loadNext()
   }
 }
+
+function resetFindState() {
+  if (findQueryTimer != null) {
+    clearTimeout(findQueryTimer)
+    findQueryTimer = null
+  }
+  findOpen.value = false
+  findQuery.value = ''
+  findMatches.value = []
+  findIndex.value = -1
+  findBusy.value = false
+}
+
+function openFindBar() {
+  findOpen.value = true
+  void nextTick(() => {
+    findInputRef.value?.focus?.()
+  })
+}
+
+function closeFindBar() {
+  findOpen.value = false
+  findMatches.value = []
+  findIndex.value = -1
+  findBusy.value = false
+  setNoteHighlights(allHighlightRanges.value)
+}
+
+function recomputeFindMatches() {
+  const q = normalizeFindQuery(findQuery.value)
+  findMatches.value = q ? findContiguousMatches(normalizedText.value, q) : []
+}
+
+async function revealCurrentFind() {
+  const match = findMatches.value[findIndex.value]
+  if (!match) return
+  const rowIndex = rowIndexForSourceOffset(mappedRows.value, match.start)
+  await nextTick()
+  virtualizer.value.measure()
+  virtualizer.value.scrollToIndex(rowIndex, { align: 'center' })
+  await waitFrames(2)
+  virtualizer.value.measure()
+  virtualizer.value.scrollToIndex(rowIndex, { align: 'center' })
+  await waitFrames(1)
+  setNoteHighlights(allHighlightRanges.value)
+  refreshVisualHighlight()
+}
+
+/** 从当前已加载正文起搜；没有命中则续载直到找到或文件结束 */
+async function searchFirstMatch() {
+  const q = normalizeFindQuery(findQuery.value)
+  if (!q) {
+    findMatches.value = []
+    findIndex.value = -1
+    return
+  }
+  findBusy.value = true
+  try {
+    recomputeFindMatches()
+    while (findMatches.value.length === 0 && !done.value) {
+      const before = nextOffset.value
+      await loadNext()
+      if (nextOffset.value === before && !done.value) break
+      recomputeFindMatches()
+    }
+    findIndex.value = findMatches.value.length > 0 ? 0 : -1
+    if (findIndex.value >= 0) await revealCurrentFind()
+    else setNoteHighlights(allHighlightRanges.value)
+  } finally {
+    findBusy.value = false
+  }
+}
+
+async function findNext() {
+  const q = normalizeFindQuery(findQuery.value)
+  if (!q) return
+  findBusy.value = true
+  try {
+    recomputeFindMatches()
+    const curStart =
+      findIndex.value >= 0 ? (findMatches.value[findIndex.value]?.start ?? -1) : -1
+    let next = findMatches.value.findIndex((m) => m.start > curStart)
+    while (next < 0 && !done.value) {
+      const before = nextOffset.value
+      await loadNext()
+      if (nextOffset.value === before && !done.value) break
+      recomputeFindMatches()
+      next = findMatches.value.findIndex((m) => m.start > curStart)
+    }
+    if (findMatches.value.length === 0) {
+      findIndex.value = -1
+      setNoteHighlights(allHighlightRanges.value)
+      return
+    }
+    findIndex.value = next < 0 ? 0 : next
+    await revealCurrentFind()
+  } finally {
+    findBusy.value = false
+  }
+}
+
+async function findPrev() {
+  const q = normalizeFindQuery(findQuery.value)
+  if (!q) return
+  findBusy.value = true
+  try {
+    recomputeFindMatches()
+    if (findMatches.value.length === 0) {
+      findIndex.value = -1
+      setNoteHighlights(allHighlightRanges.value)
+      return
+    }
+    const curStart =
+      findIndex.value >= 0
+        ? (findMatches.value[findIndex.value]?.start ?? Number.POSITIVE_INFINITY)
+        : Number.POSITIVE_INFINITY
+    let prev = -1
+    for (let i = findMatches.value.length - 1; i >= 0; i--) {
+      if (findMatches.value[i]!.start < curStart) {
+        prev = i
+        break
+      }
+    }
+    findIndex.value = prev < 0 ? findMatches.value.length - 1 : prev
+    await revealCurrentFind()
+  } finally {
+    findBusy.value = false
+  }
+}
+
+function onFindKeydown(e: KeyboardEvent) {
+  if (!visible.value) return
+  const key = e.key.toLowerCase()
+  if ((e.ctrlKey || e.metaKey) && key === 'f') {
+    e.preventDefault()
+    e.stopPropagation()
+    openFindBar()
+    return
+  }
+  if (!findOpen.value) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    closeFindBar()
+    return
+  }
+  if (e.key === 'F3') {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.shiftKey) void findPrev()
+    else void findNext()
+  }
+}
+
+function startTextEdit() {
+  if (!done.value || initialLoading.value) {
+    ElMessage.warning(t('preview.textChunkEditNeedFull'))
+    return
+  }
+  closeFindBar()
+  editDraft.value = rawText.value
+  editingText.value = true
+}
+
+function cancelTextEdit() {
+  editingText.value = false
+  editDraft.value = ''
+}
+
+async function saveTextEdit() {
+  if (textSaving.value) return
+  textSaving.value = true
+  try {
+    const content = withBlankLineAfterEachLine(editDraft.value)
+    editDraft.value = content
+    const saved = await fileApiService.replaceFileText(props.fileId, content)
+    rawText.value = content
+    const bytes = new Blob([content]).size
+    nextOffset.value = bytes
+    totalSize.value = bytes
+    done.value = true
+    editingText.value = false
+    ElMessage.success(
+      saved?.unchanged ? t('preview.textChunkEditUnchanged') : t('preview.textChunkEditSaved'),
+    )
+    emit('notes-saved')
+    await nextTick()
+    scheduleRemeasure()
+  } catch (error: unknown) {
+    ElMessage.error(apiMessage(error, t('preview.textChunkEditFailed')))
+  } finally {
+    textSaving.value = false
+  }
+}
+
+async function onGenerateNotes() {
+  const range = selectionRange.value
+  if (!range || notesSaving.value) return
+  const anchor = noteAnchorFromSelection(normalizedText.value, mappedRows.value, range)
+  const body = formatNoteExcerpt(notes.value, anchor.startOffset, anchor.endOffset)
+  if (!body) {
+    ElMessage.warning(t('preview.generateNotesEmpty'))
+    return
+  }
+
+  let suggested = defaultNoteFileName(props.fileName || '笔记')
+  notesSaving.value = true
+  try {
+    const meta = await fileApiService.getFileById(props.fileId)
+    const parentId = meta.parentId ?? undefined
+    while (true) {
+      let raw: string
+      try {
+        const result = await ElMessageBox.prompt(
+          t('preview.generateNotesNameHint'),
+          t('preview.generateNotesTitle'),
+          {
+            inputValue: suggested,
+            confirmButtonText: t('preview.textNoteSave'),
+            cancelButtonText: t('common.cancel'),
+            inputPlaceholder: suggested,
+          },
+        )
+        raw = String(result.value ?? '')
+      } catch {
+        return
+      }
+      const checked = normalizeNoteFileName(raw)
+      if (!checked.ok) {
+        ElMessage.warning(t('preview.generateNotesBadName'))
+        suggested = raw.trim() || suggested
+        continue
+      }
+      const nameCheck = await fileApiService.checkFileName(checked.name, parentId)
+      if (nameCheck.exists) {
+        ElMessage.warning(t('preview.generateNotesExists'))
+        suggested = checked.name
+        continue
+      }
+      const file = new File([body], checked.name, { type: 'text/plain' })
+      await fileApiService.uploadFile(file, parentId)
+      ElMessage.success(t('preview.generateNotesSaved', { name: checked.name }))
+      emit('notes-saved')
+      return
+    }
+  } catch (error: unknown) {
+    ElMessage.error(apiMessage(error, t('preview.generateNotesFailed')))
+  } finally {
+    notesSaving.value = false
+  }
+}
+
+watch(findQuery, () => {
+  if (!findOpen.value) return
+  if (findQueryTimer != null) clearTimeout(findQueryTimer)
+  findQueryTimer = setTimeout(() => {
+    findQueryTimer = null
+    void searchFirstMatch()
+  }, FIND_QUERY_DEBOUNCE_MS)
+})
+
+// 流式重排只在 checkbox @change / 关闭对话框时写入，避免 reset 触发的异步 watch 覆盖持久化值
 </script>
 
 <style lang="scss">
 ::highlight(vlist-sel) {
   background: rgba(64, 158, 255, 0.35);
-  color: inherit;
-}
-
-::highlight(vlist-notes) {
-  background: rgba(255, 214, 102, 0.55);
   color: inherit;
 }
 </style>
@@ -626,6 +1310,28 @@ function onScroll() {
   gap: 8px;
 }
 
+.text-note-colors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.text-note-colors__swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 0;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.text-note-colors__swatch--active {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 1px;
+}
+
 .text-note-stale {
   margin: 0;
   font-size: 12px;
@@ -676,6 +1382,53 @@ function onScroll() {
   font-size: 12px;
   color: var(--el-text-color-regular);
   line-height: 1.4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.text-chunk-editor {
+  flex: 1 1 auto;
+  min-height: 280px;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  box-sizing: border-box;
+  resize: none;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter, #f5f7fa);
+  color: var(--el-text-color-primary);
+  font-family: 'Sarasa Term SC', 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC',
+    ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.text-chunk-find {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-bg-color);
+}
+
+.text-chunk-find__input {
+  width: min(100%, 220px);
+  flex: 1 1 160px;
+}
+
+.text-chunk-find__status {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  min-width: 4em;
 }
 
 /* 固定视口高度：仅 max-height 时父级/动画下 clientHeight 可能为 0，导致虚拟列表不渲染 */
@@ -688,10 +1441,13 @@ function onScroll() {
   min-height: 280px;
   max-height: min(72vh, 640px);
   overflow: auto;
+  /* 虚拟列表量行高时内容高度会跳，浏览器默认 scroll anchoring 会把视口拖到底 */
+  overflow-anchor: none;
   background: var(--el-fill-color-lighter, #f5f7fa);
   border: 1px solid var(--el-border-color);
   border-radius: 6px;
-  padding: 12px 14px;
+  /* padding 不能加在滚动根上，否则 @tanstack/virtual 的 scrollOffset 会算偏并越滚越沉底 */
+  padding: 0;
   box-sizing: border-box;
 }
 
@@ -701,6 +1457,7 @@ function onScroll() {
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
+  padding: 12px 14px;
 }
 
 /* 左对齐、自然字距。首行缩进 2 字用 text-indent: 2em（与正文 em 等宽，符合中文习惯） */
@@ -723,17 +1480,26 @@ function onScroll() {
   cursor: text;
 }
 
-:deep(.vlist-selection-overlay) {
+:deep(.vlist-selection-overlay),
+:deep(.vlist-notes-overlay) {
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 2;
 }
 
-:deep(.vlist-selection-overlay__rect) {
+:deep(.vlist-notes-overlay) {
+  z-index: 1;
+}
+
+:deep(.vlist-selection-overlay__rect),
+:deep(.vlist-notes-overlay__rect) {
   position: absolute;
-  background: rgba(64, 158, 255, 0.35);
   border-radius: 2px;
+}
+
+:deep(.vlist-selection-overlay__rect) {
+  background: rgba(64, 158, 255, 0.35);
 }
 
 .text-chunk-scroll::selection {

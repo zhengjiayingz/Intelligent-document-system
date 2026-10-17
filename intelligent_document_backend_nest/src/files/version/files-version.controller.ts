@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   HttpCode,
@@ -6,6 +7,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Put,
   Req,
   Res,
 } from '@nestjs/common';
@@ -24,6 +26,22 @@ export class FilesVersionController {
     @Param('id', ParseIntPipe) fileId: number,
   ) {
     return this.filesVersionService.getFileVersions(user.id, fileId);
+  }
+
+  @Put(':id/text-content')
+  @HttpCode(HttpStatus.OK)
+  replaceTextContent(
+    @Req() req: Request,
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseIntPipe) fileId: number,
+    @Body() body: { content?: unknown },
+  ) {
+    return this.filesVersionService.replaceTextContent(
+      req,
+      user.id,
+      fileId,
+      body?.content,
+    );
   }
 
   @Post(':id/versions/:versionId/rollback')

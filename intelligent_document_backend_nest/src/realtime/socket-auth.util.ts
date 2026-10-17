@@ -7,7 +7,7 @@ export function matchSocketCorsOrigin(
   origin: string | undefined,
   corsOrigin: string | undefined,
 ): boolean {
-  if (!origin || /^http:\/\/localhost:\d+$/.test(origin)) return true;
+  if (!origin) return true;
   if (corsOrigin && origin === corsOrigin) return true;
   return false;
 }
@@ -65,7 +65,8 @@ export function attachSocketAuthMiddleware(
           return;
         }
 
-        socket.data.userId = user.id;
+        const data = socket.data as { userId: number };
+        data.userId = user.id;
         next();
       } catch {
         next(new Error('无效的认证令牌'));

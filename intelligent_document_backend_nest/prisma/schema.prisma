@@ -199,6 +199,7 @@ model FileTextNote {
   endOffset   Int      @map("end_offset")
   quote       String   @db.VarChar(8000)
   content     String?  @db.VarChar(2000)
+  color       String   @default("#FFD666") @db.VarChar(7)
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

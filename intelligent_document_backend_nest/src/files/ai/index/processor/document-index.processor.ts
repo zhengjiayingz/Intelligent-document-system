@@ -329,10 +329,36 @@ export class DocumentIndexProcessor extends WorkerHost {
         content: c.content,
       }));
       // 4. 跑 Map-Reduce 生成摘要，按照块->章->书逐级合并，并且每生成一层摘要都会把摘要入库。
+      // 长文 Map 阶段可能数百次 LLM：上报 done/total，避免 UI 一直停在「正在生成摘要 96%」
       await this.summaryMapReduce.runMapReduce(
         userFileId,
         summaryGenre,
         chunkInputs,
+        async (p) => {
+          if (p.phase === 'chunk') {
+            const progress =
+              96 + Math.floor((p.done / Math.max(p.total, 1)) * 2); // 96～98
+            await this.patchJob(userFileId, {
+              status: 'summarizing',
+              progress: Math.min(progress, 98),
+              progressMsg: `正在生成摘要 ${p.done}/${p.total}`,
+            });
+            return;
+          }
+          if (p.phase === 'chapter') {
+            await this.patchJob(userFileId, {
+              status: 'summarizing',
+              progress: 98,
+              progressMsg: `正在合并章节摘要 ${p.done}/${p.total}`,
+            });
+            return;
+          }
+          await this.patchJob(userFileId, {
+            status: 'summarizing',
+            progress: 99,
+            progressMsg: '正在生成全书摘要',
+          });
+        },
       );
       // 4b. 媒体：语义章节摘要（失败不阻断 ready）
       if (isIndexableMedia(fileRef) && mediaTranscriptText) {

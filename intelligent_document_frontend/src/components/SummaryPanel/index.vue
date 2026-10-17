@@ -231,9 +231,8 @@ const blocks = computed((): SummaryBlock[] => {
 
 <style lang="scss" scoped>
 .summary-panel {
-  flex: 1 1 auto;
-  min-height: 160px;
-  overflow: auto;
+  box-sizing: border-box;
+  min-height: 100%;
   padding: 12px 14px;
 }
 

@@ -158,7 +158,7 @@
       :file-name="currentPdfFile?.fileName" @download="currentPdfFile && downloadFile(currentPdfFile)" />
 
     <TextChunkPreviewDialog v-model="textChunkPreviewVisible" :file-id="textChunkFileId"
-      :file-name="textChunkFileName" />
+      :file-name="textChunkFileName" @notes-saved="loadFiles" />
 
     <!-- 压缩包在线解压到当前网盘目录 -->
     <ArchiveExtractDialog v-if="archiveExtractTarget" v-model="archiveExtractVisible" :file-id="archiveExtractTarget.id"

@@ -7,12 +7,20 @@ import { PrismaService } from '@/prisma/prisma.service';
 
 const QUOTE_MAX = 8000;
 const CONTENT_MAX = 2000;
+const DEFAULT_NOTE_COLOR = '#FFD666';
+const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 
 type CreateNoteBody = {
   startOffset: number;
   endOffset: number;
   quote: string;
   content?: string | null;
+  color?: string | null;
+};
+
+type UpdateNoteBody = {
+  content?: unknown;
+  color?: unknown;
 };
 
 function requireInt(value: unknown, name: string): number {
@@ -33,6 +41,17 @@ function normalizeContent(value: unknown): string | null {
     throw new BadRequestException(`注释不能超过 ${CONTENT_MAX} 字`);
   }
   return trimmed;
+}
+
+function normalizeColor(value: unknown, required: boolean): string | undefined {
+  if (value == null || value === '') {
+    if (required) return DEFAULT_NOTE_COLOR;
+    return undefined;
+  }
+  if (typeof value !== 'string' || !COLOR_RE.test(value)) {
+    throw new BadRequestException('color 须为 #RRGGBB');
+  }
+  return value.toUpperCase();
 }
 
 @Injectable()
@@ -71,6 +90,7 @@ export class FilesTextNoteService {
     if (body.quote.length !== endOffset - startOffset) {
       throw new BadRequestException('quote 长度与偏移不一致');
     }
+    const color = normalizeColor(body.color, true)!;
     return this.prisma.fileTextNote.create({
       data: {
         userId,
@@ -79,24 +99,38 @@ export class FilesTextNoteService {
         endOffset,
         quote: body.quote,
         content: normalizeContent(body.content),
+        color,
       },
     });
   }
 
-  async updateContent(
+  async updateNote(
     userId: number,
     fileId: number,
     noteId: number,
-    content: unknown,
+    body: UpdateNoteBody,
   ) {
     const note = await this.prisma.fileTextNote.findFirst({
       where: { id: noteId, userId, userFileId: fileId },
       select: { id: true },
     });
     if (!note) throw new NotFoundException('注释不存在');
+
+    const data: { content?: string | null; color?: string } = {};
+    if ('content' in body) {
+      data.content = normalizeContent(body.content);
+    }
+    if ('color' in body) {
+      const color = normalizeColor(body.color, true);
+      if (color) data.color = color;
+    }
+    if (!('content' in body) && !('color' in body)) {
+      throw new BadRequestException('须提供 content 或 color');
+    }
+
     return this.prisma.fileTextNote.update({
       where: { id: noteId },
-      data: { content: normalizeContent(content) },
+      data,
     });
   }
 

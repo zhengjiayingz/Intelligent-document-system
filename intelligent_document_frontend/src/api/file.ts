@@ -18,6 +18,7 @@ export type FileTextNote = {
   endOffset: number
   quote: string
   content: string | null
+  color: string
   createdAt: string
   updatedAt: string
 }
@@ -131,6 +132,14 @@ export const fileApiService = {
   // 回滚版本
   async rollbackVersion(id: number, versionId: number): Promise<void> {
     await request.post(`/files/${id}/versions/${versionId}/rollback`);
+  },
+
+  async replaceFileText(
+    id: number,
+    content: string,
+  ): Promise<{ id: number; version: number; unchanged: boolean; fileSize: number }> {
+    const res = await request.put<any>(`/files/${id}/text-content`, { content })
+    return res.data.data
   },
 
   // 简单文件上传
@@ -409,14 +418,24 @@ async scanDuplicateFiles(): Promise<DuplicatesScanResult> {
 
   async createTextNote(
     fileId: number,
-    body: { startOffset: number; endOffset: number; quote: string; content?: string | null }
+    body: {
+      startOffset: number
+      endOffset: number
+      quote: string
+      content?: string | null
+      color?: string | null
+    }
   ): Promise<FileTextNote> {
     const res = await request.post<FileTextNote>(`/files/${fileId}/text-notes`, body)
     return res.data
   },
 
-  async updateTextNote(fileId: number, noteId: number, content: string | null): Promise<FileTextNote> {
-    const res = await request.patch<FileTextNote>(`/files/${fileId}/text-notes/${noteId}`, { content })
+  async updateTextNote(
+    fileId: number,
+    noteId: number,
+    body: { content?: string | null; color?: string | null }
+  ): Promise<FileTextNote> {
+    const res = await request.patch<FileTextNote>(`/files/${fileId}/text-notes/${noteId}`, body)
     return res.data
   },
 

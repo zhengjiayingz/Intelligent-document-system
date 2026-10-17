@@ -23,7 +23,7 @@ import {
       origin: string | undefined,
       callback: (err: Error | null, ok?: boolean) => void,
     ) => {
-      const corsOrigin = process.env.CORS_ORIGIN;
+      const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
       if (matchSocketCorsOrigin(origin, corsOrigin)) {
         callback(null, true);
         return;
@@ -53,7 +53,8 @@ export class ContactsGateway implements OnGatewayInit, OnGatewayConnection {
   }
 
   handleConnection(client: Socket): void {
-    const uid = client.data.userId as number;
+    const data = client.data as { userId: number };
+    const uid = data.userId;
     void client.join(`user:${uid}`);
   }
 
