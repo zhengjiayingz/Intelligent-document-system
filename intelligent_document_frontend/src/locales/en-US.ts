@@ -622,6 +622,9 @@ export default {
     textChunkBytesHint: 'Large files load in segments; scroll to the bottom to load more',
     textChunkReflow:
       'Reflow: join line breaks within paragraphs, wrap to panel width (off = match source newlines)',
+    textChunkFontSize: 'Font size',
+    textChunkFontSizeUp: 'Increase font size',
+    textChunkFontSizeDown: 'Decrease font size',
     textNoteAdd: 'Add note',
     textNoteSave: 'Save',
     textNoteDelete: 'Delete',

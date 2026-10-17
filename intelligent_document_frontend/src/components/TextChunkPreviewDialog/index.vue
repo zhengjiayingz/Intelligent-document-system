@@ -16,6 +16,25 @@
           <el-checkbox v-model="reflowForReading" :disabled="initialLoading || editingText" @change="onReflowChange">
             {{ t('preview.textChunkReflow') }}
           </el-checkbox>
+          <div class="text-chunk-font-size" role="group" :aria-label="t('preview.textChunkFontSize')">
+            <el-button
+              size="small"
+              :disabled="initialLoading || contentFontSize <= MIN_TEXT_CHUNK_FONT_SIZE"
+              :title="t('preview.textChunkFontSizeDown')"
+              @click="bumpFontSize(-TEXT_CHUNK_FONT_SIZE_STEP)"
+            >
+              A−
+            </el-button>
+            <span class="text-chunk-font-size__value">{{ contentFontSize }}px</span>
+            <el-button
+              size="small"
+              :disabled="initialLoading || contentFontSize >= MAX_TEXT_CHUNK_FONT_SIZE"
+              :title="t('preview.textChunkFontSizeUp')"
+              @click="bumpFontSize(TEXT_CHUNK_FONT_SIZE_STEP)"
+            >
+              A+
+            </el-button>
+          </div>
           <el-button
             v-if="!editingText"
             size="small"
@@ -61,8 +80,16 @@
           v-model="editDraft"
           class="text-chunk-editor"
           spellcheck="false"
+          :style="contentFontStyle"
         />
-        <div v-else ref="scrollRef" v-loading="initialLoading" class="text-chunk-scroll" @scroll.passive="onScroll">
+        <div
+          v-else
+          ref="scrollRef"
+          v-loading="initialLoading"
+          class="text-chunk-scroll"
+          :style="contentFontStyle"
+          @scroll.passive="onScroll"
+        >
           <div v-if="!initialLoading" class="vlist-inner" :style="{
             height: `${vTotalSize}px`,
             position: 'relative',
@@ -185,6 +212,15 @@ import {
   saveTextChunkReflow,
 } from '@/utils/textChunkReflowPreference'
 import {
+  DEFAULT_TEXT_CHUNK_FONT_SIZE,
+  MAX_TEXT_CHUNK_FONT_SIZE,
+  MIN_TEXT_CHUNK_FONT_SIZE,
+  TEXT_CHUNK_FONT_SIZE_STEP,
+  clampTextChunkFontSize,
+  loadTextChunkFontSize,
+  saveTextChunkFontSize,
+} from '@/utils/textChunkFontSizePreference'
+import {
   applyScrollPreference,
   loadTextChunkScroll,
   saveTextChunkScroll,
@@ -229,6 +265,11 @@ const dialogTitle = computed(() =>
 const rawText = ref('')
 /** 为 true 时按空行分段后合并段内换行，适合纸宽排版的小说；为 false 时与文件换行一致 */
 const reflowForReading = ref(true)
+/** 正文字号（px），按用户+文件记住 */
+const contentFontSize = ref(DEFAULT_TEXT_CHUNK_FONT_SIZE)
+const contentFontStyle = computed(() => ({
+  '--text-chunk-font-size': `${contentFontSize.value}px`,
+}))
 
 const normalizedText = computed(() => normalizeNewlines(rawText.value))
 const mappedRows = computed(() => buildMappedRows(normalizedText.value, reflowForReading.value))
@@ -287,8 +328,28 @@ function persistScrollPreference(scroll: TextChunkScrollPreference) {
   saveTextChunkScroll(props.fileId, scroll, currentUserId())
 }
 
+function persistFontSizePreference(size: number) {
+  if (!(props.fileId > 0)) return
+  saveTextChunkFontSize(props.fileId, size, currentUserId())
+}
+
 function onReflowChange(value: string | number | boolean) {
   persistReflowPreference(value === true)
+}
+
+function bumpFontSize(delta: number) {
+  const next = clampTextChunkFontSize(contentFontSize.value + delta)
+  if (next === contentFontSize.value) return
+  contentFontSize.value = next
+  persistFontSizePreference(next)
+  void nextTick(() => {
+    try {
+      virtualizer.value.measure()
+    } catch {
+      /* virtualizer 尚未就绪时忽略 */
+    }
+    refreshVisualHighlight()
+  })
 }
 
 const {
@@ -572,15 +633,19 @@ watch(lastClick, (click) => {
 })
 
 const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: displayRows.value.length,
-    getScrollElement: () => scrollRef.value,
-    // 与 .vlist-row 实测行高接近，减少 measure 后总高暴涨导致的跳底
-    estimateSize: (index: number) => (displayRows.value[index]?.isBlank ? 14 : 46),
-    overscan: 12,
-    // destroy-on-close 只拆 DOM，composables 状态还在；必须显式从 0 起，否则会沿用上次的 scrollOffset 直接跳到底
-    initialOffset: 0,
-  }))
+  computed(() => {
+    const scale = contentFontSize.value / DEFAULT_TEXT_CHUNK_FONT_SIZE
+    return {
+      count: displayRows.value.length,
+      getScrollElement: () => scrollRef.value,
+      // 与 .vlist-row 实测行高接近，并随字号缩放，减少 measure 后总高暴涨导致的跳底
+      estimateSize: (index: number) =>
+        Math.round((displayRows.value[index]?.isBlank ? 14 : 46) * scale),
+      overscan: 12,
+      // destroy-on-close 只拆 DOM，composables 状态还在；必须显式从 0 起，否则会沿用上次的 scrollOffset 直接跳到底
+      initialOffset: 0,
+    }
+  })
 )
 
 /** 把虚拟列表内部偏移和 DOM scrollTop 都拉回顶部（跨次打开时必需） */
@@ -865,6 +930,8 @@ async function onOpen() {
   const uid = currentUserId()
   const savedReflow = loadTextChunkReflow(props.fileId, uid)
   reflowForReading.value = savedReflow ?? true
+  contentFontSize.value =
+    loadTextChunkFontSize(props.fileId, uid) ?? DEFAULT_TEXT_CHUNK_FONT_SIZE
   void nextTick(() => {
     suppressProgressSave = false
   })
@@ -1388,6 +1455,20 @@ watch(findQuery, () => {
   gap: 8px;
 }
 
+.text-chunk-font-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.text-chunk-font-size__value {
+  min-width: 3.2em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-secondary);
+}
+
 .text-chunk-editor {
   flex: 1 1 auto;
   min-height: 280px;
@@ -1402,7 +1483,7 @@ watch(findQuery, () => {
   color: var(--el-text-color-primary);
   font-family: 'Sarasa Term SC', 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC',
     ui-sans-serif, system-ui, sans-serif;
-  font-size: 14px;
+  font-size: var(--text-chunk-font-size, 14px);
   line-height: 1.65;
   white-space: pre-wrap;
 }
@@ -1465,7 +1546,7 @@ watch(findQuery, () => {
   margin: 0;
   font-family: 'Sarasa Term SC', 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC',
     ui-sans-serif, system-ui, sans-serif;
-  font-size: 14px;
+  font-size: var(--text-chunk-font-size, 14px);
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
