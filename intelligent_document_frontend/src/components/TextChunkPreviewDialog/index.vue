@@ -168,13 +168,61 @@
       </section>
     </div>
   </el-dialog>
+
+  <el-dialog
+    v-model="generateNotesOpen"
+    class="generate-notes-dialog"
+    :title="t('preview.generateNotesTitle')"
+    width="420px"
+    append-to-body
+    destroy-on-close
+    @closed="onGenerateNotesClosed"
+  >
+    <p class="generate-notes-hint">{{ t('preview.generateNotesNameHint') }}</p>
+    <p class="generate-notes-colors-label">{{ t('preview.generateNotesColors') }}</p>
+    <div class="generate-notes-colors" role="group" :aria-label="t('preview.generateNotesColors')">
+      <button
+        v-for="color in generateNotesColorOptions"
+        :key="color"
+        type="button"
+        class="generate-notes-colors__swatch"
+        :class="{ 'generate-notes-colors__swatch--active': generateNotesSelectedColors.includes(color) }"
+        :style="{ background: color }"
+        :title="color"
+        :aria-pressed="generateNotesSelectedColors.includes(color)"
+        @click="toggleGenerateNotesColor(color)"
+      />
+    </div>
+    <el-checkbox
+      class="generate-notes-colors-all"
+      :model-value="generateNotesAllSelected"
+      :indeterminate="generateNotesPartialSelected"
+      @change="onToggleAllGenerateNotesColors"
+    >
+      {{ t('preview.generateNotesColorsAll') }}
+    </el-checkbox>
+    <el-input
+      v-model="generateNotesFileName"
+      class="generate-notes-filename"
+      :placeholder="defaultNoteFileName(fileName || '笔记')"
+      @keydown.enter.prevent="() => void confirmGenerateNotes()"
+    />
+    <template #footer>
+      <el-button :disabled="notesSaving" @click="generateNotesOpen = false">
+        {{ t('common.cancel') }}
+      </el-button>
+      <el-button type="primary" :loading="notesSaving" @click="() => void confirmGenerateNotes()">
+        {{ t('preview.textNoteSave') }}
+      </el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import fileApiService, { type FileTextNote } from '@api/file'
 import DocumentAiPanel from '@components/DocumentAiPanel/index.vue'
 import {
@@ -184,6 +232,7 @@ import {
 import {
   buildMappedRows,
   caretToSource,
+  findRemappedNoteRange,
   normalizeNewlines,
   noteAnchorFromSelection,
   noteStatus,
@@ -191,6 +240,7 @@ import {
   sourceRangeToRows,
 } from '@/utils/textNoteAnchor'
 import {
+  colorsInNoteExcerpt,
   defaultNoteFileName,
   formatNoteExcerpt,
   normalizeNoteFileName,
@@ -293,6 +343,21 @@ const noteCard = ref<{ mode: 'create' } | { mode: 'edit'; id: number } | null>(n
 const popoverPos = ref<{ top: number; left: number } | null>(null)
 const saving = ref(false)
 const notesSaving = ref(false)
+const generateNotesOpen = ref(false)
+const generateNotesFileName = ref('')
+const generateNotesColorOptions = ref<string[]>([])
+const generateNotesSelectedColors = ref<string[]>([])
+const generateNotesRange = ref<{ start: number; end: number } | null>(null)
+const generateNotesAllSelected = computed(
+  () =>
+    generateNotesColorOptions.value.length > 0 &&
+    generateNotesSelectedColors.value.length === generateNotesColorOptions.value.length,
+)
+const generateNotesPartialSelected = computed(
+  () =>
+    generateNotesSelectedColors.value.length > 0 &&
+    generateNotesSelectedColors.value.length < generateNotesColorOptions.value.length,
+)
 const editingText = ref(false)
 const editDraft = ref('')
 const textSaving = ref(false)
@@ -998,6 +1063,14 @@ async function onOpen() {
     return
   }
   notes.value = listed
+  // 若上次误把正文「每行加空行」写回，打开时按 quote 把注解锚点找回来
+  if (done.value && listed.length > 0) {
+    await remapNotesToText(rawText.value)
+    if (gen !== noteLoadGen) {
+      restoringProgress = false
+      return
+    }
+  }
   await nextTick()
   // 正文挂载后先清掉上次会话残留的虚拟滚动偏移，再恢复进度
   resetVirtualScroll()
@@ -1023,6 +1096,9 @@ async function loadNext() {
     nextOffset.value = data.nextOffset
     if (data.totalSize) totalSize.value = data.totalSize
     done.value = data.done
+    if (data.done && notes.value.length > 0) {
+      await remapNotesToText(rawText.value)
+    }
   } catch (e: unknown) {
     const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message
     loadError.value = msg || t('preview.textChunkError')
@@ -1215,19 +1291,59 @@ function cancelTextEdit() {
   editDraft.value = ''
 }
 
+async function remapNotesToText(text: string) {
+  const normalized = normalizeNewlines(text)
+  const next: FileTextNote[] = []
+  for (const note of notes.value) {
+    const range = findRemappedNoteRange(normalized, note)
+    if (!range) {
+      next.push(note)
+      continue
+    }
+    if (range.startOffset === note.startOffset && range.endOffset === note.endOffset) {
+      next.push(note)
+      continue
+    }
+    try {
+      const updated = await fileApiService.updateTextNote(props.fileId, note.id, {
+        startOffset: range.startOffset,
+        endOffset: range.endOffset,
+        quote: note.quote,
+      })
+      next.push(updated)
+    } catch {
+      next.push(note)
+    }
+  }
+  notes.value = next
+}
+
 async function saveTextEdit() {
   if (textSaving.value) return
   textSaving.value = true
   try {
-    const content = withBlankLineAfterEachLine(editDraft.value)
+    // 写回原文只统一换行，不要做「每行后加空行」——那是导出笔记给重排用的，会打乱注解偏移
+    const content = normalizeNewlines(editDraft.value)
     editDraft.value = content
-    const saved = await fileApiService.replaceFileText(props.fileId, content)
+    const saved = await fileApiService.replaceFileText(
+      props.fileId,
+      content,
+      fileEncoding.value,
+    )
     rawText.value = content
-    const bytes = new Blob([content]).size
+    // 按服务端实际落盘编码更新（常见 GBK 小说须写回 gb18030，避免再打开乱码）
+    if (saved?.encoding === 'utf-8' || saved?.encoding === 'gb18030') {
+      fileEncoding.value = saved.encoding
+    }
+    const bytes =
+      typeof saved?.fileSize === 'number' && saved.fileSize > 0
+        ? saved.fileSize
+        : new Blob([content]).size
     nextOffset.value = bytes
     totalSize.value = bytes
     done.value = true
     editingText.value = false
+    await remapNotesToText(content)
     ElMessage.success(
       saved?.unchanged ? t('preview.textChunkEditUnchanged') : t('preview.textChunkEditSaved'),
     )
@@ -1241,56 +1357,79 @@ async function saveTextEdit() {
   }
 }
 
-async function onGenerateNotes() {
+function toggleGenerateNotesColor(color: string) {
+  const key = normalizeNoteColor(color)
+  const cur = generateNotesSelectedColors.value
+  if (cur.includes(key)) {
+    generateNotesSelectedColors.value = cur.filter((c) => c !== key)
+  } else {
+    generateNotesSelectedColors.value = [...cur, key]
+  }
+}
+
+function onToggleAllGenerateNotesColors(value: string | number | boolean) {
+  generateNotesSelectedColors.value =
+    value === true ? [...generateNotesColorOptions.value] : []
+}
+
+function onGenerateNotesClosed() {
+  generateNotesRange.value = null
+  generateNotesColorOptions.value = []
+  generateNotesSelectedColors.value = []
+  generateNotesFileName.value = ''
+}
+
+function onGenerateNotes() {
   const range = selectionRange.value
-  if (!range || notesSaving.value) return
+  if (!range || notesSaving.value || generateNotesOpen.value) return
   const anchor = noteAnchorFromSelection(normalizedText.value, mappedRows.value, range)
   const body = formatNoteExcerpt(notes.value, anchor.startOffset, anchor.endOffset)
   if (!body) {
     ElMessage.warning(t('preview.generateNotesEmpty'))
     return
   }
+  const colors = colorsInNoteExcerpt(notes.value, anchor.startOffset, anchor.endOffset)
+  generateNotesRange.value = { start: anchor.startOffset, end: anchor.endOffset }
+  generateNotesColorOptions.value = colors
+  generateNotesSelectedColors.value = [...colors]
+  generateNotesFileName.value = defaultNoteFileName(props.fileName || '笔记')
+  generateNotesOpen.value = true
+}
 
-  let suggested = defaultNoteFileName(props.fileName || '笔记')
+async function confirmGenerateNotes() {
+  const range = generateNotesRange.value
+  if (!range || notesSaving.value) return
+  if (generateNotesSelectedColors.value.length === 0) {
+    ElMessage.warning(t('preview.generateNotesNoColors'))
+    return
+  }
+  const body = formatNoteExcerpt(notes.value, range.start, range.end, {
+    colors: generateNotesSelectedColors.value,
+  })
+  if (!body) {
+    ElMessage.warning(t('preview.generateNotesEmpty'))
+    return
+  }
+  const checked = normalizeNoteFileName(generateNotesFileName.value)
+  if (!checked.ok) {
+    ElMessage.warning(t('preview.generateNotesBadName'))
+    return
+  }
+
   notesSaving.value = true
   try {
     const meta = await fileApiService.getFileById(props.fileId)
     const parentId = meta.parentId ?? undefined
-    while (true) {
-      let raw: string
-      try {
-        const result = await ElMessageBox.prompt(
-          t('preview.generateNotesNameHint'),
-          t('preview.generateNotesTitle'),
-          {
-            inputValue: suggested,
-            confirmButtonText: t('preview.textNoteSave'),
-            cancelButtonText: t('common.cancel'),
-            inputPlaceholder: suggested,
-          },
-        )
-        raw = String(result.value ?? '')
-      } catch {
-        return
-      }
-      const checked = normalizeNoteFileName(raw)
-      if (!checked.ok) {
-        ElMessage.warning(t('preview.generateNotesBadName'))
-        suggested = raw.trim() || suggested
-        continue
-      }
-      const nameCheck = await fileApiService.checkFileName(checked.name, parentId)
-      if (nameCheck.exists) {
-        ElMessage.warning(t('preview.generateNotesExists'))
-        suggested = checked.name
-        continue
-      }
-      const file = new File([body], checked.name, { type: 'text/plain' })
-      await fileApiService.uploadFile(file, parentId)
-      ElMessage.success(t('preview.generateNotesSaved', { name: checked.name }))
-      emit('notes-saved')
+    const nameCheck = await fileApiService.checkFileName(checked.name, parentId)
+    if (nameCheck.exists) {
+      ElMessage.warning(t('preview.generateNotesExists'))
       return
     }
+    const file = new File([body], checked.name, { type: 'text/plain' })
+    await fileApiService.uploadFile(file, parentId)
+    ElMessage.success(t('preview.generateNotesSaved', { name: checked.name }))
+    generateNotesOpen.value = false
+    emit('notes-saved')
   } catch (error: unknown) {
     ElMessage.error(apiMessage(error, t('preview.generateNotesFailed')))
   } finally {
@@ -1618,5 +1757,55 @@ watch(findQuery, () => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+</style>
+
+<style lang="scss">
+.generate-notes-dialog {
+  .generate-notes-hint {
+    margin: 0 0 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--el-text-color-regular);
+  }
+
+  .generate-notes-colors-label {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+  }
+
+  .generate-notes-colors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .generate-notes-colors__swatch {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 2px solid transparent;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  }
+
+  .generate-notes-colors__swatch--active {
+    border-color: var(--el-color-primary);
+    box-shadow:
+      inset 0 0 0 1px rgba(0, 0, 0, 0.08),
+      0 0 0 1px var(--el-color-primary-light-5);
+  }
+
+  .generate-notes-colors-all {
+    margin-bottom: 12px;
+  }
+
+  .generate-notes-filename {
+    width: 100%;
+  }
 }
 </style>

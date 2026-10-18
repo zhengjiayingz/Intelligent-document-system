@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  colorsInNoteExcerpt,
   defaultNoteFileName,
   formatNoteExcerpt,
   normalizeNoteFileName,
@@ -7,10 +8,10 @@ import {
 } from './textChunkNoteExcerpt'
 
 const notes = [
-  { startOffset: 10, endOffset: 16, quote: 'snarl', content: '咆哮，吼叫' },
-  { startOffset: 40, endOffset: 45, quote: 'drown', content: '淹没' },
-  { startOffset: 20, endOffset: 28, quote: 'belch', content: '   ' },
-  { startOffset: 80, endOffset: 90, quote: 'heartily', content: '尽情地' },
+  { startOffset: 10, endOffset: 16, quote: 'snarl', content: '咆哮，吼叫', color: '#FFD666' },
+  { startOffset: 40, endOffset: 45, quote: 'drown', content: '淹没', color: '#9EC9FF' },
+  { startOffset: 20, endOffset: 28, quote: 'belch', content: '   ', color: '#A8E6A1' },
+  { startOffset: 80, endOffset: 90, quote: 'heartily', content: '尽情地', color: '#FFD666' },
 ]
 
 describe('formatNoteExcerpt', () => {
@@ -34,11 +35,26 @@ describe('formatNoteExcerpt', () => {
         endOffset: 20,
         quote: "She doesn't give a hoot.\n她根本不在乎。",
         content: '不在乎',
+        color: '#FFD666',
       },
     ]
     expect(formatNoteExcerpt(wrapped, 0, 20)).toBe(
       "She doesn't give a hoot.\n\n她根本不在乎。\n\n不在乎",
     )
+  })
+
+  it('filters by selected colors; empty set yields empty body', () => {
+    expect(formatNoteExcerpt(notes, 0, 100, { colors: ['#ffd666'] })).toBe(
+      'snarl 咆哮，吼叫\n\nheartily 尽情地',
+    )
+    expect(formatNoteExcerpt(notes, 0, 100, { colors: ['#9EC9FF'] })).toBe('drown 淹没')
+    expect(formatNoteExcerpt(notes, 0, 100, { colors: [] })).toBe('')
+  })
+})
+
+describe('colorsInNoteExcerpt', () => {
+  it('lists colors of exportable notes in preset order', () => {
+    expect(colorsInNoteExcerpt(notes, 0, 100)).toEqual(['#FFD666', '#9EC9FF'])
   })
 })
 

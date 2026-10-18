@@ -80,4 +80,18 @@ describe('FilesTextNoteService', () => {
       data: { content: 'x', color: '#A8E6A1' },
     });
   });
+
+  it('可重锚定偏移与 quote', async () => {
+    prisma.fileTextNote.findFirst.mockResolvedValue({ id: 4 });
+    prisma.fileTextNote.update.mockResolvedValue({ id: 4 });
+    await service.updateNote(1, 9, 4, {
+      startOffset: 10,
+      endOffset: 15,
+      quote: 'hello',
+    });
+    expect(prisma.fileTextNote.update).toHaveBeenCalledWith({
+      where: { id: 4 },
+      data: { startOffset: 10, endOffset: 15, quote: 'hello' },
+    });
+  });
 });

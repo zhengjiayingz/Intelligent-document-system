@@ -205,6 +205,36 @@ export function noteStatus(
   return 'ready'
 }
 
+/**
+ * 正文改动后按 quote 重找锚点：原偏移仍匹配则保留；
+ * 否则取离原 startOffset 最近的一次出现（同词多处时更稳）。
+ */
+export function findRemappedNoteRange(
+  text: string,
+  note: { startOffset: number; endOffset: number; quote: string },
+): { startOffset: number; endOffset: number } | null {
+  const quote = note.quote
+  if (!quote) return null
+  if (text.slice(note.startOffset, note.endOffset) === quote) {
+    return { startOffset: note.startOffset, endOffset: note.endOffset }
+  }
+  let best: number | null = null
+  let bestDist = Number.POSITIVE_INFINITY
+  let from = 0
+  while (from <= text.length - quote.length) {
+    const i = text.indexOf(quote, from)
+    if (i < 0) break
+    const dist = Math.abs(i - note.startOffset)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = i
+    }
+    from = i + 1
+  }
+  if (best == null) return null
+  return { startOffset: best, endOffset: best + quote.length }
+}
+
 export function pickNoteAtCaret<
   T extends { id: number; startOffset: number; endOffset: number; createdAt: string },
 >(notes: T[], sourceOffset: number): T | null {

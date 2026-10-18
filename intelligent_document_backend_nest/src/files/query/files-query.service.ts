@@ -842,6 +842,23 @@ export class FilesQueryService {
     return `${userId}:${fileId}`;
   }
 
+  /** 正文写回后清掉编码缓存，避免仍按旧编码解码导致乱码 */
+  forgetTextChunkEncoding(userId: number, fileId: number): void {
+    this.textChunkEncodingCache.delete(this.textChunkCacheKey(userId, fileId));
+  }
+
+  mapTextChunkEncoding(
+    s: string | string[] | undefined | null,
+  ): TextChunkFileEncoding | null {
+    return this.mapQueryToChunkEncoding(
+      s === null ? undefined : (s as string | string[] | undefined),
+    );
+  }
+
+  detectTextChunkEncoding(buf: Buffer): TextChunkFileEncoding {
+    return this.detectTextFileEncodingFromBuffer(buf);
+  }
+
   private mapQueryToChunkEncoding(
     s: string | string[] | undefined,
   ): TextChunkFileEncoding | null {

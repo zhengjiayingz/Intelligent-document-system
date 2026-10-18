@@ -21,6 +21,10 @@ type CreateNoteBody = {
 type UpdateNoteBody = {
   content?: unknown;
   color?: unknown;
+  /** 正文变更后重锚定：须与 endOffset、quote 一起传 */
+  startOffset?: unknown;
+  endOffset?: unknown;
+  quote?: unknown;
 };
 
 function requireInt(value: unknown, name: string): number {
@@ -116,7 +120,13 @@ export class FilesTextNoteService {
     });
     if (!note) throw new NotFoundException('注释不存在');
 
-    const data: { content?: string | null; color?: string } = {};
+    const data: {
+      content?: string | null;
+      color?: string;
+      startOffset?: number;
+      endOffset?: number;
+      quote?: string;
+    } = {};
     if ('content' in body) {
       data.content = normalizeContent(body.content);
     }
@@ -124,8 +134,29 @@ export class FilesTextNoteService {
       const color = normalizeColor(body.color, true);
       if (color) data.color = color;
     }
-    if (!('content' in body) && !('color' in body)) {
-      throw new BadRequestException('须提供 content 或 color');
+    const hasAnchor =
+      'startOffset' in body || 'endOffset' in body || 'quote' in body;
+    if (hasAnchor) {
+      const startOffset = requireInt(body.startOffset, 'startOffset');
+      const endOffset = requireInt(body.endOffset, 'endOffset');
+      if (startOffset >= endOffset) {
+        throw new BadRequestException('选区长度无效');
+      }
+      if (typeof body.quote !== 'string' || body.quote.length === 0) {
+        throw new BadRequestException('quote 不能为空');
+      }
+      if (body.quote.length > QUOTE_MAX) {
+        throw new BadRequestException(`选中原文不能超过 ${QUOTE_MAX} 字`);
+      }
+      if (body.quote.length !== endOffset - startOffset) {
+        throw new BadRequestException('quote 长度与偏移不一致');
+      }
+      data.startOffset = startOffset;
+      data.endOffset = endOffset;
+      data.quote = body.quote;
+    }
+    if (!('content' in body) && !('color' in body) && !hasAnchor) {
+      throw new BadRequestException('须提供 content、color 或锚点');
     }
 
     return this.prisma.fileTextNote.update({

@@ -51,7 +51,14 @@ export class FilesTextNoteController {
     @CurrentUser() user: RequestUser,
     @Param('id', ParseIntPipe) fileId: number,
     @Param('noteId', ParseIntPipe) noteId: number,
-    @Body() body: { content?: unknown; color?: unknown },
+    @Body()
+    body: {
+      content?: unknown;
+      color?: unknown;
+      startOffset?: unknown;
+      endOffset?: unknown;
+      quote?: unknown;
+    },
   ) {
     return this.notes.updateNote(user.id, fileId, noteId, body);
   }

@@ -11,10 +11,25 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RateLimitService } from './common/rate-limit/rate-limit.service';
 import { setupSwagger } from './common/swagger/setup-swagger';
 
+function resolveJsonBodyLimit(): string {
+  // 与上传/写回原文共用 MAX_FILE_SIZE；默认 10MB，并留 JSON 包装余量
+  const raw = Number.parseInt(process.env.MAX_FILE_SIZE || '10485760', 10);
+  const maxBytes = Number.isFinite(raw) && raw > 0 ? raw : 10 * 1024 * 1024;
+  const withHeadroom = Math.ceil(maxBytes * 1.25);
+  const mb = Math.max(1, Math.ceil(withHeadroom / (1024 * 1024)));
+  return `${mb}mb`;
+}
+
 async function bootstrap() {
+  // 关闭默认 100KB bodyParser，再按 MAX_FILE_SIZE 注册，否则大文本写回会先被拒
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+    bodyParser: false,
   });
+  const bodyLimit = resolveJsonBodyLimit();
+  app.useBodyParser('json', { limit: bodyLimit });
+  app.useBodyParser('urlencoded', { limit: bodyLimit, extended: true });
+
   app.useWebSocketAdapter(new IoAdapter(app));
   app.useLogger(app.get(Logger));
   const config = app.get(ConfigService);

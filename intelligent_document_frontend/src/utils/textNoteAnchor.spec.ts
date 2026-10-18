@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildMappedRows,
   caretToSource,
+  findRemappedNoteRange,
   normalizeNewlines,
   noteAnchorFromSelection,
   noteStatus,
@@ -58,6 +59,29 @@ describe('textNoteAnchor', () => {
     expect(noteStatus('hello', { startOffset: 0, endOffset: 5, quote: 'hellp' }, true)).toBe(
       'stale',
     )
+  })
+
+  it('findRemappedNoteRange keeps offset when still valid, else nearest quote', () => {
+    expect(
+      findRemappedNoteRange('hello world', { startOffset: 0, endOffset: 5, quote: 'hello' }),
+    ).toEqual({ startOffset: 0, endOffset: 5 })
+    expect(
+      findRemappedNoteRange('xx\n\nhello\n\nhello', {
+        startOffset: 0,
+        endOffset: 5,
+        quote: 'hello',
+      }),
+    ).toEqual({ startOffset: 4, endOffset: 9 })
+    expect(
+      findRemappedNoteRange('xx\n\nhello\n\nhello', {
+        startOffset: 20,
+        endOffset: 25,
+        quote: 'hello',
+      }),
+    ).toEqual({ startOffset: 11, endOffset: 16 })
+    expect(
+      findRemappedNoteRange('abc', { startOffset: 0, endOffset: 5, quote: 'hello' }),
+    ).toBeNull()
   })
 
   it('重叠时取更短的一条，一样短则取较新的', () => {

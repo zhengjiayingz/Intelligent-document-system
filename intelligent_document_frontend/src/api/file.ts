@@ -137,8 +137,18 @@ export const fileApiService = {
   async replaceFileText(
     id: number,
     content: string,
-  ): Promise<{ id: number; version: number; unchanged: boolean; fileSize: number }> {
-    const res = await request.put<any>(`/files/${id}/text-content`, { content })
+    encoding?: 'utf-8' | 'gb18030',
+  ): Promise<{
+    id: number
+    version: number
+    unchanged: boolean
+    fileSize: number
+    encoding?: 'utf-8' | 'gb18030'
+  }> {
+    const res = await request.put<any>(`/files/${id}/text-content`, {
+      content,
+      ...(encoding ? { encoding } : {}),
+    })
     return res.data.data
   },
 
@@ -433,7 +443,13 @@ async scanDuplicateFiles(): Promise<DuplicatesScanResult> {
   async updateTextNote(
     fileId: number,
     noteId: number,
-    body: { content?: string | null; color?: string | null }
+    body: {
+      content?: string | null
+      color?: string | null
+      startOffset?: number
+      endOffset?: number
+      quote?: string
+    }
   ): Promise<FileTextNote> {
     const res = await request.patch<FileTextNote>(`/files/${fileId}/text-notes/${noteId}`, body)
     return res.data

@@ -34,13 +34,14 @@ export class FilesVersionController {
     @Req() req: Request,
     @CurrentUser() user: RequestUser,
     @Param('id', ParseIntPipe) fileId: number,
-    @Body() body: { content?: unknown },
+    @Body() body: { content?: unknown; encoding?: unknown },
   ) {
     return this.filesVersionService.replaceTextContent(
       req,
       user.id,
       fileId,
       body?.content,
+      body?.encoding,
     );
   }
 
