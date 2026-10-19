@@ -4,6 +4,7 @@ import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/m
 import type { Request } from 'express';
 import { diskStorage } from 'multer';
 import { getUploadRootDir } from '../utils/storagePath.utils';
+import { applyDecodedOriginalName } from './multipart-filename.util';
 
 function ensureChunkTmpDir(): string {
   const dir = join(process.cwd(), 'chunks', '_tmp');
@@ -17,6 +18,7 @@ export const chunkUploadOptions: MulterOptions = {
       cb(null, ensureChunkTmpDir());
     },
     filename: (_req, file, cb) => {
+      applyDecodedOriginalName(file);
       const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
       cb(null, `chunk-${uniqueSuffix}${extname(file.originalname)}`);
     },
@@ -34,6 +36,7 @@ export const fileUploadOptions: MulterOptions = {
       cb(null, dir);
     },
     filename: (_req, file, cb) => {
+      applyDecodedOriginalName(file);
       const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
       const ext = extname(file.originalname);
       const nameWithoutExt = file.originalname.slice(
@@ -47,6 +50,7 @@ export const fileUploadOptions: MulterOptions = {
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '10485760', 10),
   },
   fileFilter: (req: Request, file, cb) => {
+    applyDecodedOriginalName(file);
     const body = req.body as Record<string, unknown>;
     if (body.fileHash && body.chunkIndex !== undefined) {
       cb(null, true);
@@ -69,7 +73,10 @@ export const fileUploadOptions: MulterOptions = {
       return;
     }
     // 简单上传 .txt 时浏览器 MIME 是 text/plain，白名单正则只认 txt 子串
-    if (ext === '.txt' && (!file.mimetype || file.mimetype.startsWith('text/plain'))) {
+    if (
+      ext === '.txt' &&
+      (!file.mimetype || file.mimetype.startsWith('text/plain'))
+    ) {
       cb(null, true);
       return;
     }

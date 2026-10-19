@@ -19,6 +19,7 @@ import { calculateFileHash, ensureDirectoryExists } from '../utils/file.utils';
 import { toStoredRelativePath } from '../utils/storagePath.utils';
 import { MergeUploadError } from './merge-upload.errors';
 import { MergeUploadService } from './merge-upload.service';
+import { applyDecodedOriginalName } from './multipart-filename.util';
 
 function parseOptionalInt(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null;
@@ -399,6 +400,8 @@ export class FilesUploadService {
     if (!file) {
       throw new BadRequestException('请选择要上传的文件');
     }
+    // multipart 文件名默认 latin1，中文笔记名在入库前还原成 UTF-8
+    applyDecodedOriginalName(file);
 
     const storage = this.storageService.getStorageProvider();
     const fileHash = calculateFileHash(file.path);
