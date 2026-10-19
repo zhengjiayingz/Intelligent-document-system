@@ -33,10 +33,7 @@ describe('index-resume.util', () => {
 
   it('expectedCount 与行数不一致 → null', () => {
     expect(
-      assessIndexResume(
-        [{ chunkIndex: 0, content: 'a', embedding: null }],
-        2,
-      ),
+      assessIndexResume([{ chunkIndex: 0, content: 'a', embedding: null }], 2),
     ).toBeNull();
   });
 
@@ -76,6 +73,17 @@ describe('index-resume.util', () => {
         resumeFrom: 'embedding',
       }),
     ).toBe(true);
+  });
+
+  it('shouldKeepChunksForResume：ready 且正文已变不保留', () => {
+    expect(
+      shouldKeepChunksForResume({
+        force: false,
+        existingStatus: 'ready',
+        resumeFrom: 'summarizing',
+        contentChanged: true,
+      }),
+    ).toBe(false);
   });
 
   it('shouldKeepChunksForResume：卡住 embedding+force 可保留', () => {

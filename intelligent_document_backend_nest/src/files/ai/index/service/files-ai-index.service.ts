@@ -162,6 +162,9 @@ export class FilesAiIndexService {
       force,
       existingStatus: existing?.status,
       resumeFrom,
+      contentChanged:
+        existing?.status === 'ready' &&
+        existing.indexedFileHash !== userFile.storage.fileHash,
     });
     const progressMsg = keepChunks
       ? resumeFrom === 'summarizing'

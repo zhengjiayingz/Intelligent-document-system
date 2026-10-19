@@ -49,14 +49,21 @@ export function assessIndexResume(
 /**
  * 是否应保留已有 chunks（断点续建）。
  * ready + force：用户要全量重建 → 不保留。
+ * ready 且文件哈希已变：旧 chunks 对不上新正文 → 不保留。
  * failed / 卡住的进行中 + 有可续 chunks → 保留。
  */
 export function shouldKeepChunksForResume(input: {
   force: boolean;
   existingStatus: string | null | undefined;
   resumeFrom: IndexResumeFrom | null;
+  contentChanged?: boolean;
 }): boolean {
   if (input.resumeFrom == null) return false;
-  if (input.force && input.existingStatus === 'ready') return false;
+  if (
+    input.existingStatus === 'ready' &&
+    (input.force || input.contentChanged)
+  ) {
+    return false;
+  }
   return true;
 }
