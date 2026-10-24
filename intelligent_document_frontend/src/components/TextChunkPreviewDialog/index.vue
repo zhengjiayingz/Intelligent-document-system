@@ -511,7 +511,7 @@ function rectsIntersect(a: DOMRect, b: DOMRect): boolean {
 
 function placeInPane(x: number, y: number, pane: DOMRect) {
   const card = !!noteCard.value
-  const width = card ? 260 : 108
+  const width = card ? 360 : 108
   const height = card ? 248 : 32
   const minLeft = pane.left + POPOVER_MARGIN
   const maxLeft = Math.max(minLeft, pane.right - width - POPOVER_MARGIN)
@@ -1495,11 +1495,11 @@ watch(findQuery, () => {
 .text-note-popover {
   position: fixed;
   z-index: 20;
-  max-width: 280px;
+  max-width: 380px;
 }
 
 .text-note-card {
-  width: 260px;
+  width: 360px;
   padding: 10px;
   background: var(--el-bg-color-overlay, #fff);
   border: 1px solid var(--el-border-color);
