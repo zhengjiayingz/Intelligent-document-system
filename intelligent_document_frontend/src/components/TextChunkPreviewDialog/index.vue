@@ -697,16 +697,31 @@ watch(lastClick, (click) => {
   syncPopover()
 })
 
+/** 按当前列宽估算折行后的行高。差太多时，向上滚进未测量段落会把高度差加回 scrollTop，滚动条被拽回去。 */
+function estimateRowHeight(index: number): number {
+  const row = displayRows.value[index]
+  const fontSize = contentFontSize.value
+  const lineHeight = fontSize * 1.65
+  if (!row || row.isBlank || !row.text) return Math.round(fontSize * 0.75)
+  const contentWidth = Math.max(80, (scrollRef.value?.clientWidth ?? 720) - 28)
+  let em = row.indentFirstLine ? 2 : 0
+  const text = row.text
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i)
+    if (code === 10) continue
+    em += code > 0xff ? 1 : 0.5
+  }
+  const lines = Math.max(1, Math.ceil((em * fontSize) / contentWidth))
+  return Math.round(lines * lineHeight)
+}
+
 const virtualizer = useVirtualizer(
   computed(() => {
-    const scale = contentFontSize.value / DEFAULT_TEXT_CHUNK_FONT_SIZE
     return {
       count: displayRows.value.length,
       getScrollElement: () => scrollRef.value,
-      // 与 .vlist-row 实测行高接近，并随字号缩放，减少 measure 后总高暴涨导致的跳底
-      estimateSize: (index: number) =>
-        Math.round((displayRows.value[index]?.isBlank ? 14 : 46) * scale),
-      overscan: 12,
+      estimateSize: (index: number) => estimateRowHeight(index),
+      overscan: 8,
       // destroy-on-close 只拆 DOM，composables 状态还在；必须显式从 0 起，否则会沿用上次的 scrollOffset 直接跳到底
       initialOffset: 0,
     }
@@ -739,7 +754,12 @@ function attachScrollSizeObserver() {
   resizeUnsub = null
   const el = scrollRef.value
   if (typeof ResizeObserver === 'undefined' || !el) return
+  let lastWidth = el.clientWidth
   const ro = new ResizeObserver(() => {
+    const width = el.clientWidth
+    if (width === lastWidth) return
+    lastWidth = width
+    // 只在列宽变化时清空测量。滚动本身会触发高度抖动，清缓存会把视口上方段落重新量一遍并拽回滚动条
     virtualizer.value.measure()
   })
   ro.observe(el)
@@ -1661,7 +1681,7 @@ watch(findQuery, () => {
   min-height: 280px;
   max-height: min(72vh, 640px);
   overflow: auto;
-  /* 虚拟列表量行高时内容高度会跳，浏览器默认 scroll anchoring 会把视口拖到底 */
+  /* 虚拟列表量行高时内容高度会跳，浏览器默认 scroll anchoring 会把视口拖到底或往回拽 */
   overflow-anchor: none;
   background: var(--el-fill-color-lighter, #f5f7fa);
   border: 1px solid var(--el-border-color);
@@ -1673,16 +1693,19 @@ watch(findQuery, () => {
 
 .vlist-inner {
   display: block;
+  position: relative;
   width: 100%;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
   padding: 12px 14px;
+  overflow-anchor: none;
 }
 
 /* 左对齐、自然字距。首行缩进 2 字用 text-indent: 2em（与正文 em 等宽，符合中文习惯） */
 .vlist-row {
   margin: 0;
+  overflow-anchor: none;
   font-family: 'Sarasa Term SC', 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC',
     ui-sans-serif, system-ui, sans-serif;
   font-size: var(--text-chunk-font-size, 14px);
